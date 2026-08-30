@@ -10,6 +10,10 @@ design-director workflow with render-review loops.
 ## 安装 / Install
 
 ```bash
+# npm registry（推荐：版本可被插件管理检测，用户手动更新）
+# npm registry (recommended: version detection with manual updates)
+dsh plugin --profile web add dsh-super-ppts
+
 # GitHub 直装 / install straight from GitHub
 dsh plugin --profile web add github:kkutysllb/dsh-super-ppts
 
@@ -22,6 +26,12 @@ dsh plugin --profile web add github:kkutysllb/dsh-plugins#dsh-super-ppts
 
 Switch to the **Presentation Expert** agent preset after install — or just
 state your request; the capability announcement routes it.
+
+每个版本的变更说明（新增 / 变更 / 修复 / 删除 / 兼容性）见 [`release/`](release/)；
+`package.json` 的 `version` 是插件管理检测新版本的信号，更新由用户手动触发。
+
+Per-version changes (added / changed / fixed / removed) live under
+[`release/`](release/); the `package.json` version drives update detection.
 
 ## 双交付形态 / Two delivery formats
 
@@ -110,6 +120,7 @@ dsh-super-ppts/
 ├── compiler/build_pptx.py        # pptx-designer 编译桥（--check/--ensure-deps/--run/--quick）
 ├── presets/              # 「演示文稿专家」Agent 预设（双形态路由）
 ├── demos/                # 实机样例（README 展示图的源文件 + PPTX 生成脚本）
+├── release/              # 版本发布说明（每版本一份：新增/变更/修复/删除）
 └── skills/
     ├── ppts-pptx/        # PPTX 交付线（SKILL.md + references + 渲染脚本）
     ├── ppts-html/        # HTML 交付线（入口 + forms/ 8 形态）

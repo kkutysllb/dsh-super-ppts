@@ -28,7 +28,7 @@ const PLUGINS_DIR = process.env.KCODER_PLUGINS_DIR
 const MIRROR = join(PLUGINS_DIR, 'dsh-super-ppts')
 
 // 与 package.json files 白名单一致 + LICENSE
-const INCLUDE = ['package.json', 'cordis.patch.yml', 'README.md', 'LICENSE', 'lib', 'skills', 'compiler', 'presets', 'demos', 'docs']
+const INCLUDE = ['package.json', 'cordis.patch.yml', 'README.md', 'LICENSE', 'lib', 'skills', 'compiler', 'presets', 'demos', 'docs', 'release']
 
 function listFiles(root) {
   const out = []
