@@ -2,7 +2,8 @@
 """dsh-super-ppts PPTX 编译桥（pptx-designer 引擎）。
 
 职责：
-- --check       环境自检报告（Python 版本 / pip / pptx-designer / 渲染链 soffice+pdftoppm）
+- --check       环境自检报告（Python 版本 / pip / pptx-designer / 渲染链 soffice+pdftoppm）；
+                当前解释器低于 3.10 但专属 venv 解释器满足时不算 FAIL（生成走 venv）
 - --ensure-deps 缺 pptx-designer 时自动安装：pip --user 优先，PEP 668 externally-
                 managed 解释器（Homebrew Python 等）拒绝时降级到专属 venv
 - --run <py>    运行 Build Mode 生成脚本（脚本内直接 import pptx_designer），运行后
@@ -49,12 +50,22 @@ def fail(message: str, code: int = 1) -> None:
 
 
 def check_python_version() -> str:
-    if sys.version_info < MIN_PYTHON:
+    if sys.version_info >= MIN_PYTHON:
+        return f"OK   python {platform.python_version()}"
+    # 当前解释器过旧：生成路径（resolve_python）会回落到专属 venv，venv 满足即不阻断
+    venv_version = venv_python_version()
+    if venv_version and _version_tuple(venv_version) >= MIN_PYTHON:
         return (
-            f"FAIL python {platform.python_version()} < {'.'.join(map(str, MIN_PYTHON))}"
-            f"（请升级 Python 3.10+）"
+            f"OK   python {platform.python_version()} < {'.'.join(map(str, MIN_PYTHON))}"
+            f"，但专属 venv 满足要求（python {venv_version}: {VENV_DIR}），生成将走 venv"
         )
-    return f"OK   python {platform.python_version()}"
+    hint = (
+        f"venv 解释器 {venv_version} 同样过旧" if venv_version else f"无可用专属 venv（{VENV_DIR}）"
+    )
+    return (
+        f"FAIL python {platform.python_version()} < {'.'.join(map(str, MIN_PYTHON))}"
+        f"（请升级 Python 3.10+；{hint}）"
+    )
 
 
 def module_version(import_name: str) -> str | None:
@@ -107,6 +118,38 @@ def venv_module_version() -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    """'3.14.3' → (3, 14, 3)；遇到非数字段即截断（对探测输出容错）。"""
+    parts: list[int] = []
+    for chunk in text.strip().split("."):
+        if not chunk.isdigit():
+            break
+        parts.append(int(chunk))
+    return tuple(parts)
+
+
+def venv_python_version() -> str | None:
+    """专属 venv 解释器版本（子进程探测；venv 未建或探测失败返回 None）。"""
+    python = venv_python()
+    if not os.path.isfile(python):
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603 - 参数数组，无 shell
+            [python, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # 版本号通常在 stdout（"Python 3.14.3"）；部分发行版打到 stderr，两处拼接兜底
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0 or not output:
+        return None
+    return output.split()[-1]
 
 
 def resolve_python() -> str:
