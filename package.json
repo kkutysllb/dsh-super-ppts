@@ -1,0 +1,58 @@
+{
+  "name": "dsh-super-ppts",
+  "version": "1.0.0",
+  "description": "DSH 原生演示文稿超级插件：PPTX 可编辑交付（pptx-designer 引擎 + 视觉验收）与 HTML 在线演示交付（8 种形态）统一技能编排。",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "cordis",
+    "plugin",
+    "ppt",
+    "pptx",
+    "presentation",
+    "slides",
+    "html-animation",
+    "pptx-designer",
+    "dsh-super-ppts"
+  ],
+  "author": "kkutysllb",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "lib",
+    "skills",
+    "compiler",
+    "presets",
+    "demos",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ]
+}

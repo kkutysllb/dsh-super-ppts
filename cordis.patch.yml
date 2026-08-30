@@ -1,0 +1,4 @@
+# dsh-super-ppts plugin registration patch
+- insert:
+    - id: dsh-super-ppts
+      name: 'dsh-super-ppts'
