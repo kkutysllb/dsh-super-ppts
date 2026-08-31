@@ -245,14 +245,17 @@ export function runTemplates(params: PptsTemplatesParams = {}):
       return { ok: true, message: `模板「${record.name}」`, template: toToolEntry(record, registry.defaultTemplate) }
     }
     const templates = registry.templates.map(item => toToolEntry(item, registry.defaultTemplate))
-    const result: { ok: true; message: string; count: number; defaultTemplate: TemplateToolEntry | null; prefs: PptsPrefs; templates: TemplateToolEntry[]; hint?: string } = {
+    const result: { ok: true; message: string; count: number; defaultTemplate?: TemplateToolEntry; prefs: PptsPrefs; templates: TemplateToolEntry[]; hint?: string } = {
       ok: true,
       message: templates.length === 0 ? '模板库为空' : `共 ${templates.length} 个模板`,
       count: templates.length,
-      defaultTemplate: templates.find(item => item.isDefault) ?? null,
       prefs: registry.prefs,
       templates,
     }
+    // 未设置默认模板时字段整体缺省（dsh-tools schema 子集不支持 type 数组，
+    // defaultTemplate 声明为 object，不能落 null；isDefault 标志始终可判断）。
+    const defaultEntry = templates.find(item => item.isDefault)
+    if (defaultEntry) result.defaultTemplate = defaultEntry
     if (templates.length === 0) {
       result.hint = '模板库为空：请到 Web 设置页「演示文稿」上传 .pptx 模板并命名；之后用户即可说「按模板名制作」'
     }
@@ -287,7 +290,7 @@ export const pptsTemplatesTool: DshToolDefinition = {
         ok: { type: 'boolean' },
         message: { type: 'string' },
         count: { type: 'number' },
-        defaultTemplate: { type: ['object', 'null'] },
+        defaultTemplate: { type: 'object', description: '默认模板条目；未设置默认时本字段不出现（templates[].isDefault 亦可判断）' },
         prefs: { type: 'object' },
         templates: { type: 'array', items: { type: 'object' } },
         template: { type: 'object' },

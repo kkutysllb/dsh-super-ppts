@@ -10,7 +10,7 @@
  *
  * 隔离：HOME 重定向到临时目录，测试不触碰真实 ~/.dsh/super-ppts。
  */
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -255,6 +255,57 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     })
   } catch (e) { threw2 = true }
   check('slots.inject 抛错时 apply 不抛（console 诊断降级）', !threw2)
+}
+
+// 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
+// + validateJsonSchemaValue——type 数组会让插件树加载失败、引擎无法启动），
+// 运行时不在时退回手写静态遍历。
+{
+  const { pptsCheckTool, pptsRenderTool, pptsTemplatesTool } = await import('../lib/tools.js')
+  const tools = [pptsCheckTool, pptsRenderTool, pptsTemplatesTool]
+  let validator = null
+  try {
+    const dshTools = await import('/Users/libing/Library/Application Support/KCoder/kcoder-runtime/node_modules/@deepseek-ai/dsh-tools/lib/index.js')
+    validator = { assert: dshTools.assertSupportedJsonSchema, value: dshTools.validateJsonSchemaValue }
+  } catch { /* 无运行时环境：退回手写遍历 */ }
+
+  if (validator) {
+    let staticsOk = true
+    let detail = ''
+    for (const tool of tools) {
+      for (const [label, schema] of [['parameters', tool.parameters], ['output.schema', tool.output?.schema]]) {
+        try { validator.assert(schema) } catch (e) { staticsOk = false; detail = `${tool.name}.${label}: ${e.message}` }
+      }
+    }
+    check('工具 schema 通过 dsh-tools 真校验器（静态子集）', staticsOk, detail)
+
+    // 运行时输出值校验：空库（无 defaultTemplate 字段）与非空库（有）两条分支
+    const { addTemplate, setDefaultTemplate } = await import('../lib/templates.js')
+    const { runTemplates } = await import('../lib/tools.js')
+    const emptyResult = runTemplates({})
+    const emptyViolations = validator.value(pptsTemplatesTool.output.schema, emptyResult)
+    check('空库输出值合规（defaultTemplate 字段缺省）', emptyViolations === undefined || emptyViolations?.length === 0, Array.isArray(emptyViolations) ? emptyViolations.join('; ').slice(0, 200) : '')
+    const tmpPptx = join(fakeHome, 'tmp-check.pptx')
+    writeFileSync(tmpPptx, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64, 9)]))
+    const record = addTemplate('校验模板', '', tmpPptx)
+    setDefaultTemplate(record.id)
+    const withDefaultResult = runTemplates({})
+    const withDefaultViolations = validator.value(pptsTemplatesTool.output.schema, withDefaultResult)
+    check('非空库输出值合规（含 defaultTemplate 条目）', withDefaultViolations === undefined || withDefaultViolations?.length === 0, Array.isArray(withDefaultViolations) ? withDefaultViolations.join('; ').slice(0, 200) : '')
+  } else {
+    const violations = []
+    const walk = (node, path) => {
+      if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+      if (Array.isArray(node.type)) violations.push(path + '.type 是数组（必须单一字符串）')
+      for (const [key, child] of Object.entries(node.properties ?? {})) walk(child, path + '.properties.' + key)
+      if (node.items !== undefined) walk(node.items, path + '.items')
+    }
+    for (const tool of tools) {
+      walk(tool.parameters, tool.name + '.parameters')
+      walk(tool.output?.schema, tool.name + '.output.schema')
+    }
+    check('工具 schema 全部单一 type（手写遍历兜底）', violations.length === 0, violations.join('; ').slice(0, 200))
+  }
 }
 
 /* ═══ 清理与结论 ═══ */
