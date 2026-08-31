@@ -239,6 +239,24 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   check('双语字典已注册（zh+en）', dictCalls.length === 1 && dictCalls[0].has)
 }
 
+// 降级安全：ctx.slots 缺失 / slots.inject 抛错时 apply 不得抛（boot 不炸）
+{
+  let threw = false
+  try {
+    loadedModule.apply({ locale: { register: () => () => {}, bind: () => (k) => k }, effect: (fn) => fn() })
+  } catch (e) { threw = true }
+  check('ctx.slots 缺失时 apply 不抛（静默降级）', !threw)
+  let threw2 = false
+  try {
+    loadedModule.apply({
+      slots: { inject() { throw new Error('legacy build') } },
+      locale: { register: () => () => {}, bind: () => (k) => k },
+      effect: (fn) => fn(),
+    })
+  } catch (e) { threw2 = true }
+  check('slots.inject 抛错时 apply 不抛（console 诊断降级）', !threw2)
+}
+
 /* ═══ 清理与结论 ═══ */
 
 rmSync(fakeHome, { recursive: true, force: true })
