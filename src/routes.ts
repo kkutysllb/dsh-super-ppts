@@ -120,7 +120,9 @@ function writeError(res: ServerResponse, error: unknown): void {
     writeJson(res, status, { ok: false, error: { code: error.code, message: error.message } })
     return
   }
-  writeJson(res, 500, { ok: false, error: { code: 'internal', message: error instanceof Error ? error.message : String(error) } })
+  // 未知异常不回传 message（可能含绝对路径等内部细节）：详情只进 host 日志
+  console.error('[dsh-super-ppts] internal error:', error)
+  writeJson(res, 500, { ok: false, error: { code: 'internal', message: 'internal error' } })
 }
 
 /** 从 JSON payload 取 string 字段（缺失/类型不符 → bad-request）。 */

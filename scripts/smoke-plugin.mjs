@@ -20,6 +20,11 @@ import vm from 'node:vm'
 
 const packageRoot = dirname(fileURLToPath(import.meta.url)) + '/..'
 
+// dsh 运行时 node_modules 定位：优先 DSH_RUNTIME_NODE_MODULES 覆盖；未设时回落本机
+// KCoder 安装位（换机器路径不存在 → 自动退回手写 schema 遍历兜底，弱化但不缺失）。
+const RUNTIME_NODE_MODULES = process.env.DSH_RUNTIME_NODE_MODULES
+  ?? '/Users/libing/Library/Application Support/KCoder/kcoder-runtime/node_modules'
+
 let failures = 0
 function check(name, condition, detail = '') {
   const mark = condition ? 'PASS' : 'FAIL'
@@ -116,7 +121,9 @@ async function upload(name, description, body, expectOk) {
   return { status: result.status, json: JSON.parse(result.body), expectOk }
 }
 
-const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(2048, 7)])
+// 最小伪 pptx：PK 魔数 + 填充 + 22 字节 EOCD（PK\x05\x06，上传 zip 粗校验所需）
+const eocd = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)])
+const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(2048, 7), eocd])
 {
   const r = await upload('品牌模板A', '深蓝商务风', pptxBytes)
   check('上传成功（200，ok 信封）', r.status === 200 && r.json.ok === true && r.json.value.name === '品牌模板A')
@@ -132,6 +139,10 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
 {
   const r = await upload('', '', pptxBytes)
   check('空名称拒绝（bad-request）', r.status === 400)
+}
+{
+  const r = await upload('无EOCD', '', Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(2048, 1)]))
+  check('zip 结构不完整拒绝（EOCD 粗校验）', r.status === 400 && r.json.error?.code === 'bad-request')
 }
 
 // templates.list
@@ -271,6 +282,26 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   check('slots.inject 抛错时 apply 不抛（console 诊断降级）', !threw2)
 }
 
+// client 双源同构哨兵：src/client/index.ts（类型参考）与 lib/client.js（手写产物）
+// 靠人工保持同构（BUILD NOTE 约定）——校验承载性不变量两侧同时在场，漂移即 FAIL。
+{
+  const ts = readFileSync(join(packageRoot, 'src', 'client', 'index.ts'), 'utf8')
+  const js = clientSource
+  const pairs = [
+    ["['slots', 'locale']", '["slots", "locale"]'],   // cordis inject 声明
+    ['super-ppts', 'super-ppts'],                     // settings.section id
+    ['superPpts', 'superPpts'],                       // locale 命名空间
+    ['settings.section', 'settings.section'],         // slot 类型
+    ['order: 20', 'order: 20'],                       // 导航排序
+  ]
+  const missing = []
+  for (const [tsKey, jsKey] of pairs) {
+    if (!ts.includes(tsKey)) missing.push(`src 缺 ${tsKey}`)
+    if (!js.includes(jsKey)) missing.push(`lib 缺 ${jsKey}`)
+  }
+  check('client 双源同构哨兵（src/client/index.ts ↔ lib/client.js）', missing.length === 0, missing.join('; ').slice(0, 200))
+}
+
 // 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
 // + validateJsonSchemaValue——type 数组会让插件树加载失败、引擎无法启动），
 // 运行时不在时退回手写静态遍历。
@@ -279,7 +310,7 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   const tools = [pptsCheckTool, pptsRenderTool, pptsTemplatesTool]
   let validator = null
   try {
-    const dshTools = await import('/Users/libing/Library/Application Support/KCoder/kcoder-runtime/node_modules/@deepseek-ai/dsh-tools/lib/index.js')
+    const dshTools = await import(RUNTIME_NODE_MODULES + '/@deepseek-ai/dsh-tools/lib/index.js')
     validator = { assert: dshTools.assertSupportedJsonSchema, value: dshTools.validateJsonSchemaValue }
   } catch { /* 无运行时环境：退回手写遍历 */ }
 
@@ -326,7 +357,7 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
 // register 校验路径）完整跑一遍 lib/index.js 的 apply()——用户报的引擎拒启
 // 正是 ToolRuntime.register 里的 assertSupportedJsonSchema 抛的。
 {
-  const runtimeRoot = '/Users/libing/Library/Application Support/KCoder/kcoder-runtime/node_modules'
+  const runtimeRoot = RUNTIME_NODE_MODULES
   try {
     const cordis = await import(runtimeRoot + '/@deepseek-ai/cordis/lib/index.js')
     const { ToolRuntime } = await import(runtimeRoot + '/@deepseek-ai/dsh-tools/lib/index.js')

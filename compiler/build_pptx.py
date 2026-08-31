@@ -36,6 +36,7 @@ IMPORT_NAME = "pptx_designer"
 VENV_DIR = os.path.expanduser(os.path.join("~", ".dsh", "venvs", "dsh-super-ppts"))
 
 # 常见 soffice 安装路径（shutil.which 覆盖 PATH 内场景，这里兜底 PATH 外的典型安装位）
+# 注意：与 skills/ppts-pptx/scripts/render_pptx.py 的 probe_soffice() 保持一致——改一处同步另一处
 SOFFICE_FALLBACKS = [
     "/Applications/LibreOffice.app/Contents/MacOS/soffice",           # macOS
     "/usr/local/bin/soffice", "/usr/bin/soffice",                      # Linux

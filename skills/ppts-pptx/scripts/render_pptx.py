@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 
+# 与 compiler/build_pptx.py 的 SOFFICE_FALLBACKS / probe_soffice() 保持一致——改一处同步另一处
 SOFFICE_FALLBACKS = [
     "/Applications/LibreOffice.app/Contents/MacOS/soffice",
     "/usr/local/bin/soffice",

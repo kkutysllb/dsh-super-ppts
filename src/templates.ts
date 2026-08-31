@@ -20,6 +20,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
@@ -306,7 +307,7 @@ export function updatePrefs(patch: unknown): PptsPrefs {
 
 /**
  * 流式写上传体到临时文件（模板目录内 .part 后缀），返回临时文件路径。
- * 首块校验 PK 魔数；累计超限立即中止并清理。调用方失败时无需清理
+ * 首块校验 PK 魔数、收尾校验 zip EOCD；累计超限立即中止并清理。调用方失败时无需清理
  * （本函数已兜底），成功时把返回路径交给 addTemplate()。
  */
 export async function writeUploadTemp(
@@ -314,8 +315,9 @@ export async function writeUploadTemp(
   limitBytes: number,
 ): Promise<string> {
   mkdirSync(TEMPLATE_DIR, { recursive: true })
-  const tmp = join(TEMPLATE_DIR, `upload-${process.pid}-${Date.now()}.part`)
-  const fd = openSync(tmp, 'w')
+  // 随机后缀 + 'wx'（已存在即失败）：临时名不可预测也不可抢占，杜绝符号链接/预占位竞态
+  const tmp = join(TEMPLATE_DIR, `upload-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.part`)
+  const fd = openSync(tmp, 'wx')
   let total = 0
   let first = true
   try {
@@ -343,10 +345,24 @@ export async function writeUploadTemp(
     try { rmSync(tmp, { force: true }) } catch { /* 兜底清理 */ }
     throw new TemplateStoreError('bad-request', '上传内容为空')
   }
+  // zip 粗校验：EOCD（PK\x05\x06）必在文件尾部——拦截截断/改名的非 zip 文件
+  if (!tailHasEocd(tmp)) {
+    try { rmSync(tmp, { force: true }) } catch { /* 兜底清理 */ }
+    throw new TemplateStoreError('bad-request', '不是有效的 .pptx 文件（zip 结构不完整）')
+  }
   return tmp
 }
 
-/** 供工具/路由快速判断清单是否已初始化（存在即 true，内容有效性由 loadRegistry 兜底）。 */
-export function registryExists(): boolean {
-  return existsSync(REGISTRY_FILE)
+/** zip 粗校验：文件尾部 64KB 内能找到 EOCD 签名（PK\x05\x06）即为合法 zip 容器。 */
+function tailHasEocd(file: string): boolean {
+  const size = statSync(file).size
+  const fd = openSync(file, 'r')
+  try {
+    const len = Math.min(size, 66_000)
+    const buf = Buffer.alloc(len)
+    readSync(fd, buf, 0, len, size - len)
+    return buf.indexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])) !== -1
+  } finally {
+    closeSync(fd)
+  }
 }

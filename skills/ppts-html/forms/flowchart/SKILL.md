@@ -68,4 +68,4 @@ hover 字段解释。
 ## 参考
 
 - Prompt 模板：`references/prompts.md`
-- 成片示例：`assets/`（MLP/RNN/LSTM/GRU/word2vec/GPU 等）
+- 成片示例：`assets/`（MLP/RNN/LSTM/GRU/word2vec 等）

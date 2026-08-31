@@ -76,9 +76,7 @@ export declare function setDefaultTemplate(id: string | null): void;
 export declare function updatePrefs(patch: unknown): PptsPrefs;
 /**
  * 流式写上传体到临时文件（模板目录内 .part 后缀），返回临时文件路径。
- * 首块校验 PK 魔数；累计超限立即中止并清理。调用方失败时无需清理
+ * 首块校验 PK 魔数、收尾校验 zip EOCD；累计超限立即中止并清理。调用方失败时无需清理
  * （本函数已兜底），成功时把返回路径交给 addTemplate()。
  */
 export declare function writeUploadTemp(body: AsyncIterable<unknown>, limitBytes: number): Promise<string>;
-/** 供工具/路由快速判断清单是否已初始化（存在即 true，内容有效性由 loadRegistry 兜底）。 */
-export declare function registryExists(): boolean;

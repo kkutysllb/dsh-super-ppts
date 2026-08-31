@@ -1,6 +1,7 @@
+import { packageRoot } from './paths.js';
 import { type PptsWebServerFace } from './routes.js';
 import { type DshToolDefinition } from './tools.js';
-export declare const packageRoot: string;
+export { packageRoot };
 /** Stable Cordis plugin name. */
 export declare const name = "dsh-super-ppts";
 /** apply 内访问的 ctx 服务（漏声明即抛 without inject）。 */
@@ -33,4 +34,3 @@ interface PluginContext {
 }
 /** 注册预设拷贝 + 能力通告 + 原生工具 + 设置页路由；返回组合 disposer。 */
 export declare function apply(ctx: PluginContext, config?: Config): () => void;
-export {};

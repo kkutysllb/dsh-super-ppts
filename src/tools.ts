@@ -16,8 +16,8 @@
  */
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
+import { packageRoot } from './paths.js'
 import {
   TemplateStoreError,
   loadRegistry,
@@ -25,9 +25,7 @@ import {
   type TemplateRecord,
 } from './templates.js'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-export const packageRoot = resolve(__dirname, '..')
+export { packageRoot }
 
 const COMPILER_SCRIPT = resolve(packageRoot, 'compiler', 'build_pptx.py')
 const RENDER_SCRIPT = resolve(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'render_pptx.py')
@@ -45,7 +43,8 @@ const PYTHON_CANDIDATES: readonly PythonCandidate[] = [
 
 function runOne(cmd: string, args: readonly string[], timeoutMs: number): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolvePromise) => {
-    execFile(cmd, [...args], { timeout: timeoutMs, cwd: packageRoot }, (error, stdout, stderr) => {
+    // maxBuffer 显式放宽（默认 1MB）：--check 报告/渲染输出超长时不至于误判失败
+    execFile(cmd, [...args], { timeout: timeoutMs, cwd: packageRoot, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolvePromise({ ok: !error, stdout: String(stdout ?? ''), stderr: String(stderr ?? error?.message ?? '') })
     })
   })

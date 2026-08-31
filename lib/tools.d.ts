@@ -1,5 +1,6 @@
+import { packageRoot } from './paths.js';
 import { type PptsPrefs } from './templates.js';
-export declare const packageRoot: string;
+export { packageRoot };
 interface PythonCandidate {
     cmd: string;
     args: readonly string[];
@@ -74,4 +75,3 @@ export declare function runTemplates(params?: PptsTemplatesParams): {
     message: string;
 };
 export declare const pptsTemplatesTool: DshToolDefinition;
-export {};

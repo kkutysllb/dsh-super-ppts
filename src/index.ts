@@ -29,14 +29,12 @@
  */
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
+import { packageRoot } from './paths.js'
 import { registerPptsRoutes, type PptsWebServerFace } from './routes.js'
 import { pptsCheckTool, pptsRenderTool, pptsTemplatesTool, type DshToolDefinition } from './tools.js'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-export const packageRoot = resolve(__dirname, '..')
+export { packageRoot }
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-super-ppts'
