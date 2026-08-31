@@ -52,7 +52,11 @@ export declare function newTemplateId(): string;
 export declare function validateName(raw: string): string;
 /** 描述校验：trim 后 0..DESCRIPTION_MAX；返回 trim 结果。 */
 export declare function validateDescription(raw: unknown): string;
-/** 读清单；缺文件 / 坏 JSON 一律回落默认（存储层绝不阻断插件加载）。 */
+/**
+ * 读清单。缺文件回落默认（首次运行的正常形态）；存在但坏 JSON / 形态不对时
+ * 先留底再回落默认——此后 saveRegistry 落的是干净新清单，既有模板记录保存在
+ * *.corrupt-* 里可人工恢复，不会被空数据静默覆盖（存储层绝不阻断插件加载）。
+ */
 export declare function loadRegistry(): Registry;
 /** 原子写清单：tmp + rename（进程崩溃也不会留下半截 JSON）。 */
 export declare function saveRegistry(registry: Registry): void;

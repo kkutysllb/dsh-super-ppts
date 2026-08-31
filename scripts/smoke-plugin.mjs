@@ -10,7 +10,7 @@
  *
  * 隔离：HOME 重定向到临时目录，测试不触碰真实 ~/.dsh/super-ppts。
  */
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -164,6 +164,20 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
 {
   const registry = JSON.parse(readFileSync(REGISTRY_FILE, 'utf8'))
   check('清单 JSON 合法（原子写）', Array.isArray(registry.templates) && registry.templates.length === 0)
+}
+
+// 存储层韧性：清单损坏（坏 JSON / 形态不对）读取时留底 .corrupt-*，
+// 不被后续 saveRegistry 用空数据静默覆盖（回归：audit #2）
+{
+  writeFileSync(REGISTRY_FILE, '{oops 坏 JSON', 'utf8')
+  const bad = loadRegistry()
+  check('坏 JSON 回落空库（不抛错）', Array.isArray(bad.templates) && bad.templates.length === 0)
+  writeFileSync(REGISTRY_FILE, '{"templates": 42}', 'utf8')
+  const wrongShape = loadRegistry()
+  check('形态不对（templates 非数组）回落空库（不抛错）', Array.isArray(wrongShape.templates) && wrongShape.templates.length === 0)
+  const backups = readdirSync(join(fakeHome, '.dsh', 'super-ppts')).filter(n => n.startsWith('registry.json.corrupt-'))
+  check('损坏清单留底 .corrupt-*（2 份）', backups.length === 2, backups.join(', ').slice(0, 120))
+  check('留底后 registry.json 已让位（可安全重写）', !existsSync(REGISTRY_FILE))
 }
 
 disposeRoutes()

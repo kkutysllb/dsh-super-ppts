@@ -2,11 +2,11 @@
 
 ## 角色阵容：双人喜剧（安安 × 橘雪莉）
 
-- **安安**（`anan - emotion rename/`，15 情绪）：主吐槽役。左下角 390px、z-28；中段快闪与结尾定场都归她。
-- **橘雪莉 shery**（`assets/shery - emotion rename/`，20 情绪）：**笨蛋吐槽役**。右下角 340px、z-27（略低于安安）；品牌配色锁定：气泡奶油底 `#fff6ec`/强调橘 `#e8722a`/字棕 `#4a2c1a`。**只在重点页登场（约 1/4 页面，高潮/漏洞/翻车页）**：安安结尾出场前 1.2s 先吐槽，安安随后接茬，同框至结尾一起退场。分工：雪莉惊叹犯傻（「是<b>闹鬼</b>了吧？！」），安安接茬点破（「凌晨两点…<b>谁在用它</b>?!」）。
-- 素材复制（勿读内容）：`cp -r "assets/shery - emotion rename" <输出目录>/`；安安在 `assets/examples/<项目>/anan - emotion rename/`。
+- **安安**（`anan/`，15 情绪）：主吐槽役。左下角 390px、z-28；中段快闪与结尾定场都归她。
+- **橘雪莉 shery**（`assets/characters/shery/`，20 情绪）：**笨蛋吐槽役**。右下角 340px、z-27（略低于安安）；品牌配色锁定：气泡奶油底 `#fff6ec`/强调橘 `#e8722a`/字棕 `#4a2c1a`。**只在重点页登场（约 1/4 页面，高潮/漏洞/翻车页）**：安安结尾出场前 1.2s 先吐槽，安安随后接茬，同框至结尾一起退场。分工：雪莉惊叹犯傻（「是<b>闹鬼</b>了吧？！」），安安接茬点破（「凌晨两点…<b>谁在用它</b>?!」）。
+- 素材复制（勿读内容）：`cp -r assets/characters/<角色> <输出目录>/`（见形态 SKILL.md 第 0 步）。
 
-## 安安情绪速查（引用补全 `.png`）
+## 安安情绪速查（引用补全 `.webp`）
 
 | 文件 | 情绪→节拍 | 文件 | 情绪→节拍 |
 |---|---|---|---|
@@ -19,7 +19,7 @@
 | `07_睁眸微张_愕然疑惑` | 翻车/数字惊变 | `15_平举素纸_认真以待` | 严肃声明/规则 |
 | `08_倦眼半阖_慵懒无力` | 被捆住/躺平 | | |
 
-## 雪莉情绪速查（`shery - emotion rename/`，引用补全 `.png`）
+## 雪莉情绪速查（`shery/`，引用补全 `.webp`）
 
 | 文件 | 情绪→节拍 | 文件 | 情绪→节拍 |
 |---|---|---|---|
@@ -47,11 +47,11 @@
 
 ```js
 on(4500,()=>{$('#anan .say').innerHTML='没跑任务，也在<b>扣钱</b>？！';   // 换台词
-  $('#anan img').src='anan - emotion rename/11_懵然半睁_茫然迟疑.png';   // 换立绘
+  $('#anan img').src='anan/11_懵然半睁_茫然迟疑.webp';   // 换立绘
   $('#anan').classList.remove('show');after(160,()=>{$('#anan').classList.add('show');__sfx.pop(.5)})});  // 闪换重弹
 on(7700,()=>{$('#anan').classList.remove('show');                        // 再快闪一次，铺垫结尾
   $('#anan .say').innerHTML='凌晨两点…<br><b>谁在用它</b>?!';
-  $('#anan img').src='anan - emotion rename/07_睁眸微张_愕然疑惑.png'});
+  $('#anan img').src='anan/07_睁眸微张_愕然疑惑.webp'});
 on(10800,()=>$('#anan').classList.add('show'));                          // 结尾定场（用刚换入的立绘）
 ```
 
@@ -67,9 +67,9 @@ HTML（双角色结构，气泡强约束见下）：
 
 ```html
 <div id="anan"><div class="say">安安接茬台词，<b>关键词</b>高亮</div>
-  <img src="anan - emotion rename/07_睁眸微张_愕然疑惑.png" alt="安安"></div>
+  <img src="anan/07_睁眸微张_愕然疑惑.webp" alt="安安"></div>
 <div id="shery"><div class="ssay">雪莉吐槽台词，<b>闹鬼</b>了吧？！</div>
-  <img src="shery - emotion rename/13_疑惑好奇发呆.png" alt="橘雪莉"></div>
+  <img src="shery/13_疑惑好奇发呆.webp" alt="橘雪莉"></div>
 ```
 
 ```css
