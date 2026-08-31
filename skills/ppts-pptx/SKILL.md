@@ -83,6 +83,11 @@ API 契约与结构化输入见 [references/content-and-api.md](references/conte
   交付级视觉控制时。写可复现的 Python 生成脚本作为唯一事实源。
 - **VI Build**：用户提供模板/母版/品牌规范。`extract_design_dna()` 分析模板，
   保留框架页与品牌 token，同页基础上加新页，新旧页同过渲染验收。
+- **用户模板库（优先于 VI Build 的裸模板路径）**：用户说「按模板 X 制作 /
+  用我的模板」，或 Brief 涉及公司模板时，先调 `ppts_templates`
+  （`action=detail`，`id`=名称或模板 id）拿模板绝对路径与偏好
+  （默认交付形态 / 渲染验收策略 / 输出目录 / 风格备注），再以该 .pptx 为基底
+  走 VI Build。库为空时提示用户到 Web 设置页「演示文稿」上传并命名模板。
 
 ### 6. 构建与检视循环
 

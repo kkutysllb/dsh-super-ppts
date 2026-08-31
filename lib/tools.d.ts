@@ -1,3 +1,4 @@
+import { type PptsPrefs } from './templates.js';
 export declare const packageRoot: string;
 interface PythonCandidate {
     cmd: string;
@@ -42,4 +43,35 @@ export interface DshToolDefinition {
 }
 export declare const pptsCheckTool: DshToolDefinition;
 export declare const pptsRenderTool: DshToolDefinition;
+export interface PptsTemplatesParams {
+    /** list=全部模板+偏好（默认）；detail=单条模板全量。 */
+    action?: 'list' | 'detail';
+    /** action=detail 时必填：模板 id 或名称（名称精确匹配，不区分大小写）。 */
+    id?: string;
+}
+interface TemplateToolEntry {
+    id: string;
+    name: string;
+    description: string;
+    /** .pptx 绝对路径（模板化生成直接用作基底）。 */
+    path: string;
+    sizeMb: number;
+    uploadedAt: string;
+    isDefault: boolean;
+}
+/** 模板库查询：list 返回全部模板 + 生成偏好；detail 按 id/名称取单条。 */
+export declare function runTemplates(params?: PptsTemplatesParams): {
+    ok: true;
+    message: string;
+    count?: number;
+    defaultTemplate?: TemplateToolEntry | null;
+    prefs?: PptsPrefs;
+    templates?: TemplateToolEntry[];
+    template?: TemplateToolEntry;
+    hint?: string;
+} | {
+    ok: false;
+    message: string;
+};
+export declare const pptsTemplatesTool: DshToolDefinition;
 export {};

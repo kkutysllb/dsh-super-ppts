@@ -12,6 +12,8 @@
   },
   "include": [
     "src/index.ts",
-    "src/tools.ts"
+    "src/tools.ts",
+    "src/templates.ts",
+    "src/routes.ts"
   ]
 }
