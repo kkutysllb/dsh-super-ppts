@@ -30,5 +30,7 @@
 2. 写 `release/vX.Y.Z.md`（对照上述章节）
 3. 提交并打 tag：`git tag -a vX.Y.Z -m "..."`
 4. 推送（含 tag）；npm 渠道：`npm publish --registry https://registry.npmjs.org`
-5. `node scripts/sync-to-dsh-plugins.mjs` 同步镜像仓并提交推送
-6. 双入口对账：`node scripts/sync-to-dsh-plugins.mjs --check` 零差异
+5. GitHub Release 页面：`node scripts/create-github-releases.mjs`
+   （把 `release/vX.Y.Z.md` 发布为对应 tag 的 Release 页面；幂等可重跑）
+6. `node scripts/sync-to-dsh-plugins.mjs` 同步镜像仓并提交推送
+7. 双入口对账：`node scripts/sync-to-dsh-plugins.mjs --check` 零差异
