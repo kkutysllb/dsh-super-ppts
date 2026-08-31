@@ -308,6 +308,38 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   }
 }
 
+// 插件树加载终局闸门：真 cordis Context + 真 dsh-tools ToolRuntime（引擎同款
+// register 校验路径）完整跑一遍 lib/index.js 的 apply()——用户报的引擎拒启
+// 正是 ToolRuntime.register 里的 assertSupportedJsonSchema 抛的。
+{
+  const runtimeRoot = '/Users/libing/Library/Application Support/KCoder/kcoder-runtime/node_modules'
+  try {
+    const cordis = await import(runtimeRoot + '/@deepseek-ai/cordis/lib/index.js')
+    const { ToolRuntime } = await import(runtimeRoot + '/@deepseek-ai/dsh-tools/lib/index.js')
+    const plugin = await import('../lib/index.js')
+    const ctx = new cordis.Context()
+    // ToolRuntime 构造期会调 ctx.systemPrompt.tools(...)（schema 通告 wire），
+    // 必须先提供带 tools() 的 systemPrompt 再实例化。
+    const sections = []
+    const wires = []
+    ctx.systemPrompt = {
+      section: (spec) => { sections.push(spec); return () => {} },
+      tools: (fn) => { wires.push(fn); return () => {} },
+    }
+    new ToolRuntime(ctx) // 提供 ctx.tools（register 内跑真 schema 校验）
+    const routes = new Map()
+    ctx.webServer = { register: (route) => { routes.set(route.path, route); return () => routes.delete(route.path) } }
+    const dispose = plugin.apply(ctx, {})
+    check('插件树加载：apply() 全量通过（真 cordis + 真 ToolRuntime）', typeof dispose === 'function')
+    check('能力通告 section 已注册', sections.length === 1 && sections[0].name === 'plugin:dsh-super-ppts')
+    check('工具 schema 通告 wire 已建立', wires.length === 1)
+    check('设置页路由已注册（api + upload）', routes.has('/super-ppts/api') && routes.has('/super-ppts/upload'))
+    if (typeof dispose === 'function') dispose()
+  } catch (error) {
+    check('插件树加载：apply() 全量通过（真 cordis + 真 ToolRuntime）', false, String(error.message || error).slice(0, 300))
+  }
+}
+
 /* ═══ 清理与结论 ═══ */
 
 rmSync(fakeHome, { recursive: true, force: true })
