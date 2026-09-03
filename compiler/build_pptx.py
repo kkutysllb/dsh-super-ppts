@@ -193,6 +193,41 @@ def check_render_chain() -> list[str]:
     return lines
 
 
+def _browser_hint_line() -> str:
+    """轻量探测浏览器：playwright chromium 缓存目录，或常见系统浏览器（channel 兜底）。"""
+    home = os.path.expanduser("~")
+    caches = [
+        os.path.join(home, "Library", "Caches", "ms-playwright"),   # macOS
+        os.path.join(home, ".cache", "ms-playwright"),              # Linux
+        os.path.join(home, "AppData", "Local", "ms-playwright"),    # Windows
+    ]
+    if any(os.path.isdir(path) for path in caches):
+        return "OK   浏览器: playwright chromium 缓存在场"
+    system_browsers = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser",
+    ]
+    if shutil.which("chrome") or any(os.path.isfile(path) for path in system_browsers):
+        return "OK   浏览器: 系统浏览器在场（html_capture 走 channel=chrome/msedge 兜底）"
+    return "WARN 未发现浏览器（python3 -m playwright install chromium，或安装系统 Chrome/Edge）"
+
+
+def check_media_chain() -> list[str]:
+    """混合交付 Phase 1（动画嵌入）可选链。全部 WARN 语义——不阻断纯 PPTX
+    生成与渲染验收，只影响 skills/ppts-pptx/scripts/html_capture.py 的可用性。"""
+    lines: list[str] = []
+    ffmpeg = shutil.which("ffmpeg")
+    lines.append(f"OK   ffmpeg: {ffmpeg}" if ffmpeg
+                 else "WARN ffmpeg 未找到（动画 GIF 合成不可用；mac: brew install ffmpeg）")
+    if importlib.util.find_spec("playwright") is not None:
+        lines.append("OK   playwright: 可导入（当前解释器）")
+    else:
+        lines.append("WARN playwright 未安装（HTML 快照/帧捕获不可用；python3 -m pip install --user playwright）")
+    lines.append(_browser_hint_line())
+    return lines
+
+
 def _is_externally_managed(pip_output: str) -> bool:
     return "externally-managed-environment" in pip_output
 
@@ -286,7 +321,7 @@ def quick_generate(query: str, style: str | None, output: str) -> None:
 
 
 def print_check_report() -> bool:
-    lines = [check_python_version(), check_package(), *check_render_chain()]
+    lines = [check_python_version(), check_package(), *check_render_chain(), *check_media_chain()]
     ok = all(not line.startswith(("FAIL",)) for line in lines) and not any(
         line.startswith("MISS") for line in lines
     )

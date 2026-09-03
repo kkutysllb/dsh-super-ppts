@@ -28,6 +28,10 @@ metadata:
   （或用 ppts_render 工具），产出 `render_review/` 下逐页 PNG。
   渲染链不可用时（无 soffice/pdftoppm）按 `references/review-and-delivery.md`
   的降级协议处理，不得跳过验收宣告交付。
+- 动画嵌入（混合交付，显式声明才启用，见下文专章）：
+  捕获 `scripts/html_capture.py`，嵌入 `scripts/embed_animation.py`。
+  `--check` 报告末尾的 ffmpeg/playwright/浏览器三行是这条链的可用性探测
+  （WARN 不阻断纯 PPTX 生成）。
 
 API 契约与结构化输入见 [references/content-and-api.md](references/content-and-api.md)。
 
@@ -102,6 +106,47 @@ API 契约与结构化输入见 [references/content-and-api.md](references/conte
 
 交付级任务：全量构建前确认页面规划与视觉方向；交付前确认渲染 PNG 结果。
 快速草稿可合并确认点，但 PNG 验收不可省。
+
+## 混合交付：动画嵌入（Phase 1：GIF + 快照超链接）
+
+插件的双形态在本技能内融合：ppts-html 技能线（flowchart / arch-diagram /
+ppt-animation 等 8 形态）生产的动画 HTML，可作为素材捕获后嵌入 PPTX。
+
+### 触发硬规则（显式声明）
+
+仅当 Brief **明确出现**「嵌入动画 / 动图 / GIF / 这页要动 / 交互版随附」等
+表述时才启用本流程；「内容适合动画」「加了更好」不构成触发条件——
+没说就默认纯静态 PPTX。启用后在验收表追加一行动画页需求（R-n）。
+
+### 工作流（嵌入是构建后的独立步骤）
+
+1. **素材生成**：动画 HTML 由 ppts-html 对应技能生成，或用户直接给定文件；
+2. **捕获**：`python3 skills/ppts-pptx/scripts/html_capture.py --html <anim.html>
+   --mode both --duration 6 --fps 10` → `<name>.anim.gif`（动图）、
+   `<name>.poster.png`（GIF 首帧）、`<name>.snapshot.png`（静帧）；
+3. **嵌入**：`python3 skills/ppts-pptx/scripts/embed_animation.py --pptx deck.pptx
+   --slide N --gif <name>.anim.gif --html <name>.html --output deck.anim.pptx`
+   ——GIF 优先（放映自动循环），快照兜底（无 GIF 时嵌 `--snapshot`），
+   超链接常挂（图片单击打开随附 HTML，完整交互在浏览器，不伪嵌入）；
+   `--box "L,T,W,H"`（英寸）自定义区域，`--note` 加图下说明小字；
+4. **验收**：对 `deck.anim.pptx` 走常规渲染验收。**注意：PDF/PNG 静态视图里
+   GIF 只显示首帧**——按海报帧复核画面内容与构图；动效本身在 PowerPoint/
+   WPS 放映模式确认（可让用户播放确认，或说明已知限制）；
+5. **交付物是两个文件**：`deck.anim.pptx` + 动画 HTML 原件（同目录、同名
+   不同扩展），成对交付缺一不可——PPTX 里的超链接按相对路径指向它。
+
+### 体积纪律
+
+GIF 单个 ≤ 3MB（软预算，捕获器超限会打 WARN）：默认参数（宽 800 / fps 10 /
+时长 6s）约 1–2MB；超了先降 `--duration`，再降 `--fps`（≥8 保观感），
+最后降 `--max-width`。调色板色数默认 128，UI 截图类可到 256。
+
+### 能力边界（如实告知用户）
+
+- GIF 循环播放，**不可暂停/拖进度**；要可控制的演示动效 → Phase 2（mp4 视频
+  嵌入，规划中）；要完全可编辑的进场动画 → Phase 3（原生 p:timing，规划中）；
+- 交互（hover/点击展开/拖拽）在 PPTX 内不存在，超链接 + 随附 HTML 是唯一正解；
+- 打印与 PDF 导出永远是静态首帧。
 
 ## 验收与返工细则
 

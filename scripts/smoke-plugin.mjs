@@ -6,7 +6,9 @@
  * 1. host：templates.ts 存储层 + routes.ts HTTP 面（mock req/res 全流程：
  *    上传 → 列表 → 重命名 → 设默认 → 偏好更新 → 删除）；
  * 2. client：lib/client.js 的 ModuleLoader 自注册形态（stub React +
- *    stub ctx.slots/ctx.locale，断言 settings.section 注册参数）。
+ *    stub ctx.slots/ctx.locale，断言 settings.section 注册参数）；
+ * 3. 混合交付：embed_animation.py 的 GIF/快照嵌入与超链接 rel
+ *    （系统 python3 + python-pptx 不可用时自动 SKIP，不计失败）。
  *
  * 隔离：HOME 重定向到临时目录，测试不触碰真实 ~/.dsh/super-ppts。
  */
@@ -16,6 +18,7 @@ import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import vm from 'node:vm'
 
 const packageRoot = dirname(fileURLToPath(import.meta.url)) + '/..'
@@ -26,6 +29,7 @@ const RUNTIME_NODE_MODULES = process.env.DSH_RUNTIME_NODE_MODULES
   ?? '/Users/libing/Library/Application Support/KCoder/kcoder-runtime/node_modules'
 
 let failures = 0
+const REAL_HOME = process.env.HOME // host/client 测试会重定向 HOME；python 用户站点（pip --user）依赖真实 HOME
 function check(name, condition, detail = '') {
   const mark = condition ? 'PASS' : 'FAIL'
   console.log(`\x1b[${condition ? 32 : 31}m${mark}\x1b[0m  ${name}${detail ? ' — ' + detail : ''}`)
@@ -383,6 +387,83 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     if (typeof dispose === 'function') dispose()
   } catch (error) {
     check('插件树加载：apply() 全量通过（真 cordis + 真 ToolRuntime）', false, String(error.message || error).slice(0, 300))
+  }
+}
+
+/* ═══ 5. 混合交付 Phase 1：动画嵌入脚本 ═══ */
+
+// 依赖系统 python3 + python-pptx（插件运行链本身经 pptx-designer 传递依赖它）；
+// 不可用时打印 SKIP 不计失败——冒烟主体（host + client）不受影响。
+{
+  const embedScript = join(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'embed_animation.py')
+  const pyEnv = { ...process.env, HOME: REAL_HOME } // 保用户站点解析（pip --user 的 python-pptx）
+  let pyOk = true
+  try {
+    execFileSync('python3', ['-c', 'import pptx'], { stdio: 'ignore', env: pyEnv })
+  } catch {
+    pyOk = false
+  }
+  if (!existsSync(embedScript)) pyOk = false
+  if (!pyOk) {
+    console.log('SKIP  动画嵌入测试（python3 / python-pptx / 脚本缺失）')
+  } else {
+    const dir = mkdtempSync(join(tmpdir(), 'sp-embed-smoke-'))
+    const driver = join(dir, 'test_embed.py')
+    // Python 驱动：造 2 页空 deck → GIF 嵌第 1 页（含超链接+note）→ 快照嵌第 2 页
+    // → 解包断言 media 部件与 External 超链接 rel。fixture 用 1x1 微型图（合法 GIF/PNG）。
+    writeFileSync(driver, [
+      "import base64, os, subprocess, sys, tempfile, zipfile",
+      "tmp = tempfile.mkdtemp(prefix='sp-embed-')",
+      "os.chdir(tmp)",
+      "open('tiny.gif', 'wb').write(base64.b64decode(",
+      "    'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'))",
+      "open('tiny.png', 'wb').write(base64.b64decode(",
+      "    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='))",
+      "open('tiny.html', 'w').write('<html><body>interactive</body></html>')",
+      "from pptx import Presentation",
+      "prs = Presentation()",
+      "prs.slides.add_slide(prs.slide_layouts[6])",
+      "prs.slides.add_slide(prs.slide_layouts[6])",
+      "prs.save('deck.pptx')",
+      "embed = sys.argv[1]",
+      "r1 = subprocess.run([sys.executable, embed, '--pptx', 'deck.pptx', '--slide', '1',",
+      "                     '--gif', 'tiny.gif', '--html', 'tiny.html', '--note', 'see html',",
+      "                     '--output', 'deck.anim.pptx'], capture_output=True, text=True)",
+      "r2 = subprocess.run([sys.executable, embed, '--pptx', 'deck.anim.pptx', '--slide', '2',",
+      "                     '--snapshot', 'tiny.png', '--html', 'tiny.html',",
+      "                     '--output', 'deck.anim.pptx'], capture_output=True, text=True)",
+      "detail = ''",
+      "gif_ok = r1.returncode == 0 and 'EMBED_OK' in r1.stdout",
+      "png_ok = r2.returncode == 0 and 'EMBED_OK' in r2.stdout",
+      "if os.path.exists('deck.anim.pptx'):",
+      "    z = zipfile.ZipFile('deck.anim.pptx')",
+      "    media = [n for n in z.namelist() if n.startswith('ppt/media/')]",
+      "    rels1 = z.read('ppt/slides/_rels/slide1.xml.rels').decode()",
+      "    rels2 = z.read('ppt/slides/_rels/slide2.xml.rels').decode()",
+      "    gif_ok = gif_ok and any(n.endswith('.gif') for n in media) and 'tiny.html' in rels1 and 'External' in rels1",
+      "    png_ok = png_ok and any(n.endswith('.png') for n in media) and 'tiny.html' in rels2 and 'External' in rels2",
+      "else:",
+      "    detail = 'deck.anim.pptx 未产出; '",
+      "if not gif_ok:",
+      "    detail += 'GIF rc=%s out=%s err=%s; ' % (r1.returncode, r1.stdout[-160:], r1.stderr[-160:])",
+      "if not png_ok:",
+      "    detail += 'PNG rc=%s out=%s err=%s' % (r2.returncode, r2.stdout[-160:], r2.stderr[-160:])",
+      "print('EMBED_GIF_OK' if gif_ok else 'EMBED_GIF_FAIL')",
+      "print('EMBED_PNG_OK' if png_ok else 'EMBED_PNG_FAIL')",
+      "if detail:",
+      "    print('DETAIL ' + detail)",
+    ].join('\n'))
+    try {
+      const out = execFileSync('python3', [driver, embedScript], { encoding: 'utf8', env: pyEnv })
+      const detail = (out.split('\n').find(line => line.startsWith('DETAIL')) || '').slice(0, 220)
+      check('动画嵌入：GIF + 相对超链接（embed_animation.py）', out.includes('EMBED_GIF_OK'), detail)
+      check('动画嵌入：快照兜底 + 外链 rel', out.includes('EMBED_PNG_OK'), detail)
+    } catch (error) {
+      check('动画嵌入：GIF + 相对超链接（embed_animation.py）', false, String(error.message || error).slice(0, 220))
+      check('动画嵌入：快照兜底 + 外链 rel', false, '同上（驱动进程失败）')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }
 }
 
