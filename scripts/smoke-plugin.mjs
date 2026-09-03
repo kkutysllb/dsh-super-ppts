@@ -293,6 +293,7 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     ['superPpts', 'superPpts'],                       // locale 命名空间
     ['settings.section', 'settings.section'],         // slot 类型
     ['order: 20', 'order: 20'],                       // 导航排序
+    ['data-dsh-super-ppts-settings-nav', 'data-dsh-super-ppts-settings-nav'], // 导航图标标记
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
