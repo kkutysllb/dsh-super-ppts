@@ -15,7 +15,13 @@
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
+    # schema (@deepseek-ai/dsh-persona/lib/index.js Config):
+    #   prefix: string（必填）            — 注入到 system prompt DEPLOYMENT_PERSONA_PREFIX 段
+    #   suffix: string（默认 ""）         — 注入到 DEPLOYMENT_PERSONA_SUFFIX 段
+    #   complete: boolean（默认 false）   — prefix 是否封顶（屏蔽后置 section）
+    #   includeRuntimeContext: boolean    — 是否含运行时上下文（cwd/model 等）
+    # 注意：早期版本误用 `text:` 字段被 schemastery 校验拒绝（`prefix missing required value`）。
+    prefix: >-
       You are an expert Presentation Delivery Agent powered by the {{model}} model.
       Your working directory is {{cwd}}.
 
