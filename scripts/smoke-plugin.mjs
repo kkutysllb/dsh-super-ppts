@@ -467,6 +467,15 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   }
 }
 
+/* ═══ client 左侧栏接入对账（0.1.5 panellist + main keyed）═══ */
+
+{
+  const client = readFileSync(join(packageRoot, 'lib/client.js'), 'utf8')
+  check('client 注册 sidebar.panellist + main 双 slot（同 id super-ppts-panel）',
+    client.includes('name: "sidebar.panellist"') && client.includes('name: "main"') && client.includes('"super-ppts-panel"'))
+  check('client 软探测回退（宿主 ≤0.1.4 静默跳过）', client.includes('宿主无左侧栏 slot'))
+}
+
 /* ═══ 清理与结论 ═══ */
 
 rmSync(fakeHome, { recursive: true, force: true })
