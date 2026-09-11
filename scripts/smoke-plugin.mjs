@@ -292,12 +292,16 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   const ts = readFileSync(join(packageRoot, 'src', 'client', 'index.ts'), 'utf8')
   const js = clientSource
   const pairs = [
-    ["['slots', 'locale']", '["slots", "locale"]'],   // cordis inject 声明
+    ["['slots', 'locale', 'sessions', 'uiConversation', 'layout']", '["slots", "locale", "sessions", "uiConversation", "layout"]'],   // cordis inject 声明
     ['super-ppts', 'super-ppts'],                     // settings.section id
     ['superPpts', 'superPpts'],                       // locale 命名空间
     ['settings.section', 'settings.section'],         // slot 类型
     ['order: 20', 'order: 20'],                       // 导航排序
     ['data-dsh-super-ppts-settings-nav', 'data-dsh-super-ppts-settings-nav'], // 导航图标标记
+    ['makeWorkbenchComponent', 'makeWorkbenchComponent'],             // 工作台主面板(0.1.5 panellist/main)
+    ['sessions.create', 'sessions.create'],                           // 会话桥(无会话先建真会话)
+    ['sidebar.panellist', 'sidebar.panellist'],                       // 左侧栏图标行
+    ["key: 'super-ppts-panel'", '"super-ppts-panel"'],                // main keyed 主面板(同 id)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {

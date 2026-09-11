@@ -23,7 +23,7 @@
  *    HMR/停用无残留。
  *
  * APPLY NOTE：访问 ctx.slots / ctx.locale 需要两处同时声明——
- * - exports.inject = ['slots', 'locale']（cordis 服务名）；
+ * - exports.inject = ['slots', 'locale', 'sessions', 'uiConversation', 'layout']（cordis 服务名）；
  * - package.json → dsh.client.inject 列出对应 runtime 包
  *   （@deepseek-ai/dsh-client-locale、@deepseek-ai/dsh-client-ui-slots、
  *   @deepseek-ai/dsh-client-ui-settings）。
@@ -42,7 +42,7 @@ export interface PptsClientContext {
 }
 
 /** 必需服务（cordis fiber inject）。 */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'sessions', 'uiConversation', 'layout']
 
 /**
  * 设置页导航图标标记（与 lib/client.js 的 registerSettingsNavIcon 同构）：
@@ -77,7 +77,47 @@ export function registerSettingsNavIcon(label: () => string): () => void {
   }
 }
 
-/** 挂载设置页「演示文稿」区块。 */
+/**
+ * 会话输入桥（与 lib/client.js 的 sendToChat 同构）：复制创作提示词到
+ * 剪贴板，成功后自动切回会话视图；失败留在面板显示提示。无会话时先经
+ * sessions.create() 建立真会话。返回 'copied' | 'none' 供 UI 提示。
+ */
+export async function sendToChat(ctx: PptsClientContext, text: string): Promise<'copied' | 'none'> {
+  let write: Promise<'copied' | 'none'> = Promise.resolve('none')
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      write = navigator.clipboard.writeText(text)
+        .then(() => 'copied' as const)
+        .catch(() => 'none' as const)
+    }
+  } catch { /* 剪贴板不可用 */ }
+  const result = await write
+  if (result !== 'copied') return 'none'
+  try {
+    const sessions = (ctx as unknown as {
+      sessions?: {
+        list?: { getSnapshot?(): { current?: string } }
+        create?(opts?: { cwd?: string }): Promise<string>
+        open?(id: string): void
+      }
+    })
+    const current = sessions?.list?.getSnapshot?.().current
+    const backToChat = (): void => {
+      try { ctx.layout?.selectPanel?.(null) } catch { /* 服务不可达:留在当前面板 */ }
+    }
+    if (!current && typeof sessions?.create === 'function') {
+      sessions.create().then((id) => {
+        try { sessions?.open?.(id) } catch { /* 已选中 */ }
+        backToChat()
+      }).catch(() => backToChat())
+    } else {
+      backToChat()
+    }
+  } catch (error) { /* 服务不可达:留在当前面板 */ }
+  return 'copied'
+}
+
+/** 挂载设置页「演示文稿」区块 + 左侧栏工作台主面板。 */
 export function apply(ctx: PptsClientContext): void {
   ctx.effect(() => ctx.locale.register('superPpts', { zh: {}, en: {} }), 'dsh-super-ppts: section dictionaries')
   const t = ctx.locale.bind('superPpts')
@@ -90,4 +130,17 @@ export function apply(ctx: PptsClientContext): void {
       function Stateful() { return null },
     ),
   )
+  // 0.1.5 左侧栏原生接入:panellist 图标行 + main keyed 工作台主面板
+  // （makeWorkbenchComponent,真实形态见 lib/client.js）;宿主 ≤0.1.4 软回退。
+  ctx.slots.inject('sidebar.panellist', () => {
+    const disposeIcon = ctx.slots.register(
+      { name: 'sidebar.panellist', id: 'super-ppts-panel', order: 100, label: () => t('nav'), locale: 'superPpts' },
+      function PanelIcon() { return null },
+    )
+    const disposePanel = ctx.slots.register(
+      { name: 'main', key: 'super-ppts-panel' },
+      function Workbench() { return null },
+    )
+    return () => { disposePanel(); disposeIcon() }
+  })
 }
