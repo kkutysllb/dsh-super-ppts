@@ -21,11 +21,13 @@ dsh plugin --profile web add github:kkutysllb/dsh-super-ppts
 dsh plugin --profile web add github:kkutysllb/dsh-plugins#dsh-super-ppts
 ```
 
-装好后切换 Agent 预设「**演示文稿专家**」即可开始（也可不切预设，直接在
-对话里说需求，能力通告会引导路由）。
+直接在对话里说需求（例：「把这份季度数据做成一页高管汇报 PPT」），插件的
+能力通告会自动把对话路由到 PPTX / HTML 技能线；侧边栏「演示文稿」工作台
+可先选好工作区、交付形态与模板，再把 Brief 填入当前会话输入框确认发送。
 
-Switch to the **Presentation Expert** agent preset after install — or just
-state your request; the capability announcement routes it.
+Just state your request in chat — the capability announcement routes it to
+the PPTX / HTML skill lines. The sidebar Presentation studio prepares the
+brief (workspace, format, template) and fills it into the chat composer.
 
 每个版本的变更说明（新增 / 变更 / 修复 / 删除 / 兼容性）见 [`release/`](release/)；
 `package.json` 的 `version` 是插件管理检测新版本的信号，更新由用户手动触发。
@@ -142,7 +144,6 @@ dsh-super-ppts/
 ├── lib/                  # 预编译产物（client.js 为手写自注册壳：设置页「演示文稿」）
 ├── scripts/              # 冒烟测试 / 镜像同步（不随 npm 发布）
 ├── compiler/build_pptx.py        # pptx-designer 编译桥（--check/--ensure-deps/--run/--quick）
-├── presets/              # 「演示文稿专家」Agent 预设（双形态路由）
 ├── demos/                # 实机样例（README 展示图的源文件 + PPTX 生成脚本）
 ├── release/              # 版本发布说明（每版本一份：新增/变更/修复/删除）
 └── skills/
