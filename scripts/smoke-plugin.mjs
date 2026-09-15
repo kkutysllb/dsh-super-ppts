@@ -292,7 +292,7 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   const ts = readFileSync(join(packageRoot, 'src', 'client', 'index.ts'), 'utf8')
   const js = clientSource
   const pairs = [
-    ["['slots', 'locale', 'sessions', 'uiConversation', 'layout']", '["slots", "locale", "sessions", "uiConversation", "layout"]'],   // cordis inject 声明
+    ["['slots', 'locale', 'sessions', 'uiConversation', 'uiWorkspace', 'workspaces', 'layout']", '["slots", "locale", "sessions", "uiConversation", "uiWorkspace", "workspaces", "layout"]'],   // cordis inject 声明
     ['super-ppts', 'super-ppts'],                     // settings.section id
     ['superPpts', 'superPpts'],                       // locale 命名空间
     ['settings.section', 'settings.section'],         // slot 类型
@@ -302,6 +302,11 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     ['sessions.create', 'sessions.create'],                           // 会话桥(无会话先建真会话)
     ['sidebar.panellist', 'sidebar.panellist'],                       // 左侧栏图标行
     ["key: 'super-ppts-panel'", '"super-ppts-panel"'],                // main keyed 主面板(同 id)
+    ['conversation.input', 'conversation.input'],                     // 0.1.16 草稿桥(会话输入注册面)
+    ['setDraft', 'setDraft'],                                         // 输入框程序化写入
+    ['uiWorkspace', 'uiWorkspace'],                                   // 工作区导航服务
+    ['openWorkspace', 'openWorkspace'],                               // 跨工作区落点
+    ['useWorkspaces', 'useWorkspaces'],                               // 工作台工作区行(全局标准 hook)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
