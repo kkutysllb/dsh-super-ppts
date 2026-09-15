@@ -2,8 +2,9 @@
  * dsh-super-ppts Host 入口（DSH/Cordis 插件）。
  *
  * 职责（刻意保持最小面）：
- * 1. 预设安装：把 presets/ 下的「演示文稿专家」Agent 预设拷贝到
- *    ~/.dsh/.agent-presets/super-ppts/，供 Web GUI 直接切换（离线复用）。
+ * 1. 旧预设清理：DSH 0.1.16 起 agent-presets 按 agent.cordis.yml 组合挂载，
+ *    插件自造预设已失效；apply 时幂等清理历史版本写入的
+ *    ~/.dsh/.agent-presets/super-ppts/（best-effort，失败不阻断加载）。
  * 2. 能力通告：向 systemPrompt 注册一段能力说明 section（可经
  *    config.announceToAgent 关闭）。具体生成工作流由技能层（skills/ppts-pptx、
  *    skills/ppts-html）承载，提示词里不重复技能正文，避免上下文膨胀。
@@ -27,7 +28,7 @@
  *   skills/ppts-pptx/scripts/），HTML 产物是单文件直接浏览器打开；
  * - 所有外部进程调用一律 execFile 参数数组，禁止 shell 字符串拼接。
  */
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { packageRoot } from './paths.js'
@@ -71,26 +72,20 @@ interface PluginContext {
   get(name: string): unknown
 }
 
-/** 把 presets/ 下的预设文件拷贝到用户目录（幂等，文件不存在时静默跳过）。 */
-function ensurePresetInstalled(): void {
+/** 清理旧版本安装的插件预设目录（幂等 best-effort；失败静默跳过）。 */
+function removeLegacyPresetDir(): void {
   try {
-    const userPresetDir = resolve(homedir(), '.dsh', '.agent-presets', 'super-ppts')
-    if (!existsSync(userPresetDir)) mkdirSync(userPresetDir, { recursive: true })
-    const pluginPresets = resolve(packageRoot, 'presets')
-    for (const name of ['preset.yml', 'agent.cordis.yml'] as const) {
-      const source = resolve(pluginPresets, name)
-      if (existsSync(source)) copyFileSync(source, resolve(userPresetDir, name))
-    }
+    rmSync(resolve(homedir(), '.dsh', '.agent-presets', 'super-ppts'), { recursive: true, force: true })
   } catch {
-    // 预设拷贝失败不阻断插件加载（用户可手动从 presets/ 取用）
+    // 清理失败（目录权限等）不阻断插件加载，不影响其余功能
   }
 }
 
-/** 注册预设拷贝 + 能力通告 + 原生工具 + 设置页路由；返回组合 disposer。 */
+/** 注册旧预设清理 + 能力通告 + 原生工具 + 设置页路由；返回组合 disposer。 */
 export function apply(ctx: PluginContext, config: Config = {}): () => void {
   if (config.enabled === false) return () => {}
 
-  ensurePresetInstalled()
+  removeLegacyPresetDir()
 
   const disposers: Array<() => void> = []
   if (config.announceToAgent !== false) {

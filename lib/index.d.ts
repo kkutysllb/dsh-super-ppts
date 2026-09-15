@@ -32,5 +32,5 @@ interface PluginContext {
     effect(fn: () => () => void, name?: string): () => void;
     get(name: string): unknown;
 }
-/** 注册预设拷贝 + 能力通告 + 原生工具 + 设置页路由；返回组合 disposer。 */
+/** 注册旧预设清理 + 能力通告 + 原生工具 + 设置页路由；返回组合 disposer。 */
 export declare function apply(ctx: PluginContext, config?: Config): () => void;
