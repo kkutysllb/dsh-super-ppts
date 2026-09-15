@@ -195,6 +195,9 @@ export function apply(ctx: PptsClientContext): void {
     )
     const disposePanel = ctx.slots.register(
       { name: 'main', key: 'super-ppts-panel' },
+      // 工作台组件（makeWorkbenchComponent，真实形态见 lib/client.js）：
+      // root 面板接收全局标准 props useWorkspaces（工作区选择行，
+      // 选择器用法 useWorkspaces(s => s.items)；旧宿主缺失时行隐藏）。
       function Workbench() { return null },
     )
     return () => { disposePanel(); disposeIcon() }

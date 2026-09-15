@@ -488,6 +488,8 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   check('client 注册 sidebar.panellist + main 双 slot（同 id super-ppts-panel）',
     client.includes('name: "sidebar.panellist"') && client.includes('name: "main"') && client.includes('"super-ppts-panel"'))
   check('client 软探测回退（宿主 ≤0.1.4 静默跳过）', client.includes('宿主无左侧栏 slot'))
+  check('工作台读全局工作区 hook（useWorkspaces 选择器）', client.includes('useWorkspaces(function'))
+  check('工作台状态完备（加载/空/错误/重试）', client.includes('wsLoading') && client.includes('wsEmpty') && client.includes('loadFailed') && client.includes('retry'))
 }
 
 /* ═══ 清理与结论 ═══ */
