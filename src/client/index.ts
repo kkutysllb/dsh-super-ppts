@@ -22,11 +22,16 @@
  *    CSS 用 Lucide presentation（幕布）字形替换齿轮；disposer 清标记，
  *    HMR/停用无残留。
  *
+ * 6. 0.1.16 草稿桥：工作区选择（uiWorkspace.openWorkspace 复用/新建会话）
+ *    + 会话输入框程序化填充（sessions.scope(id).conversation.input
+ *    .for(actx).setDraft）；剪贴板为降级路径（copyToClipboardBridge）。
+ *
  * APPLY NOTE：访问 ctx.slots / ctx.locale 需要两处同时声明——
- * - exports.inject = ['slots', 'locale', 'sessions', 'uiConversation', 'layout']（cordis 服务名）；
+ * - exports.inject = ['slots', 'locale', 'sessions', 'uiConversation',
+ *   'uiWorkspace', 'workspaces', 'layout']（cordis 服务名）；
  * - package.json → dsh.client.inject 列出对应 runtime 包
  *   （@deepseek-ai/dsh-client-locale、@deepseek-ai/dsh-client-ui-slots、
- *   @deepseek-ai/dsh-client-ui-settings）。
+ *   @deepseek-ai/dsh-client-ui-conversation、@deepseek-ai/dsh-client-ui-workspace）。
  */
 /** 客户端入口收到的 ctx 服务面（声明的服务 + cordis 自带 effect）。 */
 export interface PptsClientContext {
@@ -38,11 +43,20 @@ export interface PptsClientContext {
     register(ns: string, dicts: { zh: Record<string, string>; en: Record<string, string> }): () => void
     bind(ns: string): (key: string, params?: Record<string, unknown>) => string
   }
+  uiWorkspace?: { openWorkspace(workspaceId: string): Promise<void> }
+  workspaces?: {
+    list: {
+      getSnapshot(): {
+        items: Array<{ workspaceId: string; path: string; title: string; sessionIds: string[] }>
+        phase: string
+      }
+    }
+  }
   effect(fn: () => () => void, name?: string): () => void
 }
 
 /** 必需服务（cordis fiber inject）。 */
-export const inject = ['slots', 'locale', 'sessions', 'uiConversation', 'layout']
+export const inject = ['slots', 'locale', 'sessions', 'uiConversation', 'uiWorkspace', 'workspaces', 'layout']
 
 /**
  * 设置页导航图标标记（与 lib/client.js 的 registerSettingsNavIcon 同构）：
@@ -77,44 +91,86 @@ export function registerSettingsNavIcon(label: () => string): () => void {
   }
 }
 
+/** v2 草稿桥结果：'draft' = 已填输入框；'copied' = 剪贴板降级成功；'none' = 全失败。 */
+export type SendToChatResult = 'draft' | 'copied' | 'none'
+
 /**
- * 会话输入桥（与 lib/client.js 的 sendToChat 同构）：复制创作提示词到
- * 剪贴板，成功后自动切回会话视图；失败留在面板显示提示。无会话时先经
- * sessions.create() 建立真会话。返回 'copied' | 'none' 供 UI 提示。
+ * 草稿桥 v2（与 lib/client.js 的 sendToChat/copyToClipboardBridge 行为同构，
+ * 以 lib/client.js 实现为准）：
+ * 1) 会话落点（含工作区选择）：同工作区 → 当前会话；跨工作区/无会话 →
+ *    uiWorkspace.openWorkspace(ws)（复用空白会话或新建 + 自动切回对话）；
+ *    工作区列表空 → sessions.create() + open。
+ * 2) 填草稿：sessions.scope(id).conversation.input.for(actx).setDraft(text)
+ *    —— shell 按 session binding 构建，面板激活时也能写输入框。
+ * 3) 任一步不可达 → 降级剪贴板（v1：复制 + 切回会话视图）。
  */
-export async function sendToChat(ctx: PptsClientContext, text: string): Promise<'copied' | 'none'> {
-  let write: Promise<'copied' | 'none'> = Promise.resolve('none')
-  try {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      write = navigator.clipboard.writeText(text)
-        .then(() => 'copied' as const)
-        .catch(() => 'none' as const)
-    }
-  } catch { /* 剪贴板不可用 */ }
-  const result = await write
-  if (result !== 'copied') return 'none'
-  try {
-    const sessions = (ctx as unknown as {
-      sessions?: {
-        list?: { getSnapshot?(): { current?: string } }
-        create?(opts?: { cwd?: string }): Promise<string>
-        open?(id: string): void
+export async function sendToChat(ctx: PptsClientContext, text: string, workspaceId?: string): Promise<SendToChatResult> {
+  type SessionsFace = {
+    list?: { getSnapshot?(): { current?: string } }
+    create?(opts?: { cwd?: string }): Promise<string>
+    open?(id: string): void
+    scope?(id: string): (Record<string, unknown> & { conversation?: { input?: { for?(c: unknown): { setDraft?(t: string): void } } } }) | undefined
+  }
+  const sessions = (ctx as unknown as { sessions?: SessionsFace }).sessions
+  const workspaces = ctx.workspaces
+  const uiWorkspace = ctx.uiWorkspace
+  const backToChat = (): void => {
+    try { (ctx as unknown as { layout?: { selectPanel?(id: unknown): void } }).layout?.selectPanel?.(null) } catch { /* 服务不可达:留在当前面板 */ }
+  }
+  const clipboardFallback = async (): Promise<SendToChatResult> => {
+    let copied = false
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        copied = await navigator.clipboard.writeText(text).then(() => true).catch(() => false)
       }
-    })
-    const current = sessions?.list?.getSnapshot?.().current
-    const backToChat = (): void => {
-      try { ctx.layout?.selectPanel?.(null) } catch { /* 服务不可达:留在当前面板 */ }
+    } catch { /* 剪贴板不可用 */ }
+    if (!copied) return 'none'
+    try {
+      const current = sessions?.list?.getSnapshot?.().current
+      if (!current && typeof sessions?.create === 'function') {
+        await sessions.create().then(async (id) => { try { sessions?.open?.(id) } catch { /* 已选中 */ } }).catch(() => { /* 无落点 */ })
+      }
+    } catch { /* 服务不可达 */ }
+    backToChat()
+    return 'copied'
+  }
+  try {
+    if (!sessions?.list?.getSnapshot) return clipboardFallback()
+    const current = sessions.list.getSnapshot().current
+    const wsList = workspaces?.list?.getSnapshot?.() ?? null
+    let wsOfCurrent: string | null = null
+    if (current && wsList) {
+      for (const item of wsList.items) {
+        if (item.sessionIds.includes(current)) { wsOfCurrent = item.workspaceId; break }
+      }
     }
-    if (!current && typeof sessions?.create === 'function') {
-      sessions.create().then((id) => {
-        try { sessions?.open?.(id) } catch { /* 已选中 */ }
+    const wantsSwitch = workspaceId !== undefined && workspaceId !== '' && wsOfCurrent !== workspaceId
+    let sessionId: string | null | undefined = current
+    if (!current || wantsSwitch) {
+      if (uiWorkspace?.openWorkspace && wsList && wsList.items.length > 0) {
+        const target = workspaceId || wsOfCurrent || wsList.items[0].workspaceId
+        await uiWorkspace.openWorkspace(target)
+        sessionId = sessions.list.getSnapshot().current ?? null
+      } else if (typeof sessions.create === 'function') {
+        sessionId = await sessions.create()
+        try { sessions?.open?.(sessionId) } catch { /* 已选中 */ }
         backToChat()
-      }).catch(() => backToChat())
-    } else {
-      backToChat()
+      } else {
+        sessionId = null
+      }
     }
-  } catch (error) { /* 服务不可达:留在当前面板 */ }
-  return 'copied'
+    if (sessionId === null || sessionId === undefined) return clipboardFallback()
+    backToChat()
+    const actx = sessions.scope?.(sessionId)
+    const shell = actx?.conversation?.input?.for?.(actx)
+    if (shell && typeof shell.setDraft === 'function') {
+      shell.setDraft(text)
+      return 'draft'
+    }
+    return clipboardFallback()
+  } catch {
+    return clipboardFallback()
+  }
 }
 
 /** 挂载设置页「演示文稿」区块 + 左侧栏工作台主面板。 */
