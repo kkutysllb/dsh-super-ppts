@@ -12,7 +12,7 @@
  *
  * 隔离：HOME 重定向到临时目录，测试不触碰真实 ~/.dsh/super-ppts。
  */
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -383,11 +383,16 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     new ToolRuntime(ctx) // 提供 ctx.tools（register 内跑真 schema 校验）
     const routes = new Map()
     ctx.webServer = { register: (route) => { routes.set(route.path, route); return () => routes.delete(route.path) } }
+    // 0.1.16 适配：预置旧版本残留的预设目录，apply 后必须被清理
+    const legacyPresetDir = join(fakeHome, '.dsh', '.agent-presets', 'super-ppts')
+    mkdirSync(legacyPresetDir, { recursive: true })
+    writeFileSync(join(legacyPresetDir, 'preset.yml'), 'name: stale', 'utf8')
     const dispose = plugin.apply(ctx, {})
     check('插件树加载：apply() 全量通过（真 cordis + 真 ToolRuntime）', typeof dispose === 'function')
     check('能力通告 section 已注册', sections.length === 1 && sections[0].name === 'plugin:dsh-super-ppts')
     check('工具 schema 通告 wire 已建立', wires.length === 1)
     check('设置页路由已注册（api + upload）', routes.has('/super-ppts/api') && routes.has('/super-ppts/upload'))
+    check('旧预设目录已清理（0.1.16 适配）', !existsSync(legacyPresetDir))
     if (typeof dispose === 'function') dispose()
   } catch (error) {
     check('插件树加载：apply() 全量通过（真 cordis + 真 ToolRuntime）', false, String(error.message || error).slice(0, 300))
