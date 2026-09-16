@@ -2555,6 +2555,13 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
         && /onClick: function \(\) \{ leaveTaskView\(\); setView\(SP_VIEW_NEW\)/.test(clientSource)
         && /onClick: function \(\) \{ leaveTaskView\(\); setView\(SP_VIEW_RECENT\)/.test(clientSource)
     })())
+    // 滚动兜底（实机反馈：宿主 main 容器裁剪内容且不可滚，展开卡片后够不着下方）
+    check('面板根 CSS 自滚：height:100% + overflow-y:auto（宿主给定高度时生效）',
+      /\.sp-panels\{[^}]*height:100%;[^}]*overflow-y:auto;/.test(clientSource))
+    check('滚动兜底 effect：父容器不可滚（visible/clip）时按其可视高度接管滚动',
+      clientSource.includes('root.style.maxHeight = h + "px"')
+      && clientSource.includes('root.style.overflowY = "auto"')
+      && clientSource.includes('window.addEventListener("resize", fitToParent)'))
     check('壳层任务态锚点：SP_VIEW_TASK 参与视图分发 + taskOpenFailed 错误横幅接线',
       clientSource.includes('view === SP_VIEW_TASK') && clientSource.includes('t("taskOpenFailed")'))
     check('新 i18n 键齐全（zh+en）：attentionHint / taskOpenFailed',
