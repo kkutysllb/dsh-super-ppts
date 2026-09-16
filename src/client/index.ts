@@ -238,8 +238,10 @@ export function isPollingStatus(status?: string): boolean {
 /**
  * 单任务轮询循环：到点 → tasks.get → onTick(record) → 记录仍是活跃态则
  * 按固定间隔续期，终态（或 cancel）即停。网络抖动（请求失败）按「继续
- * 轮询」处理——一次失败不该杀死恢复观察；onTick 拿不到记录时收到 null，
- * 由调用方决定是否提示。返回 cancel（幂等，可重复调用）。
+ * 轮询」处理——一次失败不该杀死恢复观察；但 **not-found 类错误**（任务被
+ * 删除：message 含 not-found / 不存在 / HTTP 404）即停，不空转（实现后
+ * 审查修正）。onTick 拿不到记录时收到 null，由调用方决定是否提示。
+ * 返回 cancel（幂等，可重复调用）。
  * （真实形态见 lib/client.js 同名函数：schedule 语义 = 到点单发一次，
  * 默认用 setTimeout 实现，不用 setInterval；loop 返回 promise 供注入方
  * await 完整一轮。）
@@ -860,7 +862,8 @@ export function copyText(text: string, impl?: { writeText?(value: string): unkno
  * 「重新生成」（buildRegeneratePrompt 经会话桥，不改状态）。继续修改 =
  * buildContinueEditPrompt 投递，submitted 后 tasks.update status:'building'
  * → onUpdated；copied/none → sp-msg-err 不发 tasks.update。摘要行页数取
- * outline.pages.length、形态取 brief.format。快捷 chip 四个只填文案不发送。
+ * outline.pages.length；措辞按 brief.format 选键（html → resultSummaryHtml、
+ * 其余 → resultSummaryPptx，实现后审查修正）。快捷 chip 四个只填文案不发送。
  * 类名契约：sp-view-result / sp-result-head(sp-back·sp-task-title·
  * sp-task-status) / sp-result-summary / sp-artifacts>sp-artifact
  * (sp-artifact-type·sp-artifact-status·sp-artifact-path·sp-artifact-copy·

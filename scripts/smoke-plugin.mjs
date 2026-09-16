@@ -916,6 +916,11 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['startTaskPolling', 'startTaskPolling'],                         // 轮询循环(可注入 schedule,3s 固定间隔)
     ['buildContinuePrompt', 'buildContinuePrompt'],                   // 大纲确认后的继续生成指令(Task 2)
     ['buildOutlineRevisePrompt', 'buildOutlineRevisePrompt'],         // 自然语言修改大纲指令(Task 2)
+    ['progressSteps', 'progressSteps'],                               // 六阶段时间线映射纯函数(Task 4)
+    ['lastEventOfKind', 'lastEventOfKind'],                           // 最近指定 kind 事件(失败原因/needs-input 问题,Task 4)
+    ['copyText', 'copyText'],                                         // 剪贴板复制原语(不可用静默降级,Task 5)
+    ['routeSubView', 'routeSubView'],                                 // 详情路由判定(壳层分发与冒烟共用,Task 6)
+    ['openTaskRecord', 'openTaskRecord'],                             // 打开任务:tasks.get 完整记录,绝不抛(Task 6)
     ['makeOutlineReviewView', 'makeOutlineReviewView'],               // 大纲确认视图(Plan 2b Task 3;确认门+未保存态)
     ['makeProgressView', 'makeProgressView'],                         // 生成进度视图(Plan 2b Task 4;六阶段时间线+恢复变体)
     ['makeResultView', 'makeResultView'],                             // 结果视图(Plan 2b Task 5;产物引用+继续修改)
@@ -1797,6 +1802,25 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     })
     await scheduledErr[0]()
     check('startTaskPolling: 请求失败继续轮询', errReschedule === 2)
+
+    // 实现后审查修正：not-found 类错误（任务已被删除）→ 停轮询，不空转；
+    // 中文文案「不存在」同样停。其它错误维持继续（上方 boom 断言不回归）。
+    let nfReschedule = 0
+    const scheduledNf = []
+    H.startTaskPolling('k3', () => {}, {
+      api: () => Promise.reject(new Error('HTTP 404')),
+      schedule: (fn) => { nfReschedule += 1; scheduledNf.push(fn); return () => {} },
+    })
+    await scheduledNf[0]()
+    check('startTaskPolling: HTTP 404（not-found 类）停止调度（被删任务不空转）', nfReschedule === 1)
+    let nfRescheduleZh = 0
+    const scheduledNfZh = []
+    H.startTaskPolling('k4', () => {}, {
+      api: () => Promise.reject(new Error('任务不存在')),
+      schedule: (fn) => { nfRescheduleZh += 1; scheduledNfZh.push(fn); return () => {} },
+    })
+    await scheduledNfZh[0]()
+    check('startTaskPolling: 「不存在」文案同样停止调度', nfRescheduleZh === 1)
   } catch (error) {
     // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
     check('Plan 2b Task 1 断言块无异常执行', false, String(error && error.message).slice(0, 160))
@@ -2331,10 +2355,20 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   try {
     const tree = resultTree()
     // 标题含根类名 → 判定式补根类名在场（Task 4 同法；语义只增强不削弱）。
-    check('结果视图根类名 + 摘要行含页数与交付形态文案', (() => {
+    // 实现后审查修正：摘要措辞按 brief.format 分流（resultSummaryPptx /
+    // resultSummaryHtml），不再把 {format} 原值填进文案。
+    check('结果视图根类名 + 摘要行含页数与 PPTX 形态文案（resultSummaryPptx 分流）', (() => {
       const summary = byClass(tree, 'sp-result-summary')
       return !!byClass(tree, 'sp-view-result').length
-        && !!summary.length && treeText(summary).includes('3 页') && treeText(summary).includes('pptx')
+        && !!summary.length && treeText(summary).includes('3 页') && treeText(summary).includes('PPTX')
+        && !treeText(summary).includes('HTML')
+    })())
+    check('结果摘要按 brief.format 分流：html 任务 → HTML 在线演示文案', (() => {
+      extra = { task: resultTask({ brief: { topic: 'Q3 经营复盘', format: 'html' } }) }
+      const htmlTree = resultTree()
+      extra = null
+      const summary = byClass(htmlTree, 'sp-result-summary')
+      return !!summary.length && treeText(summary).includes('HTML') && treeText(summary).includes('3 页')
     })())
     check('产物条目×2：ready 徽标 + missing 丢失提示 + 路径文本 + 复制按钮', (() => {
       const items = artifactItems(tree)
@@ -2399,7 +2433,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       return sent.length === 1 && sent[0].text.includes('pdf') && sent[0].text.includes('/ws/Q3-review.pdf')
     })())
     check('i18n 键齐全（zh+en）', (() => {
-      const keys = ['resultSummary', 'artifactReady', 'artifactMissing', 'artifactRegen', 'copyPath',
+      const keys = ['resultSummaryPptx', 'resultSummaryHtml', 'artifactReady', 'artifactMissing', 'artifactRegen', 'copyPath',
         'artifactsEmpty', 'continueEdit', 'continueSubmit', 'quickRedoPage', 'quickRestyle', 'quickShrink', 'quickRerender']
       return keys.every((k) => zhDict()[k] !== undefined && enDict()[k] !== undefined)
     })())
