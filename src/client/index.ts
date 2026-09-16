@@ -478,6 +478,67 @@ export function buildRegeneratePrompt(task: PptsPromptTask, artifact: { type?: s
 }
 
 /**
+ * 大纲页操作纯函数族（Plan 2b Task 3a；真实形态见 lib/client.js 同名函数）：
+ * 大纲确认视图的全部多字段编辑逻辑（换位/复制/增删/要点解析/dirty 比较）一律
+ * 下沉为模块级纯函数，视图只做 setState 接线；`exports.__testHooks.outlineOps`
+ * 按 { clonePages, uniquePageId, movePage, copyPage, addPage, removePage,
+ * parseBullets, normalizePage, outlineDiffers } 聚合暴露给冒烟。
+ */
+/** 归一化后的单页（clonePages 的输出形状；可选字段一律落成空串/空数组）。 */
+export interface PptsOutlinePage {
+  id: string
+  title: string
+  purpose: string
+  bullets: string[]
+  pageType: string
+}
+
+/** 深拷贝 + 形状归一（可选字段容忍）；改副本不影响原数组。 */
+export function clonePages(pages: unknown[]): PptsOutlinePage[] {
+  return []
+}
+
+/** 新页 id：'p' + (length+1) 起，跳过已占用（while 去重保证全局唯一）。 */
+export function uniquePageId(pages: PptsOutlinePage[]): string {
+  return 'p1'
+}
+
+/** 相邻换位；越界（含空数组）返回原数组不抛。 */
+export function movePage(pages: PptsOutlinePage[], index: number, delta: number): PptsOutlinePage[] {
+  return pages
+}
+
+/** 复制到后一位，副本取全局唯一 id。 */
+export function copyPage(pages: PptsOutlinePage[], index: number): PptsOutlinePage[] {
+  return pages
+}
+
+/** 追加新页（唯一 id + 注入标题），供「＋ 添加页面」。 */
+export function addPage(pages: PptsOutlinePage[], title: string): PptsOutlinePage[] {
+  return pages
+}
+
+/** 删除目标页（越界返回原数组）。 */
+export function removePage(pages: PptsOutlinePage[], index: number): PptsOutlinePage[] {
+  return pages
+}
+
+/** 要点 textarea 文本 → 数组：丢空行，行内容原样保留。 */
+export function parseBullets(text: string): string[] {
+  return []
+}
+
+/** 归一化单页（undefined purpose/pageType 与空串等价、bullets 合成单串），供 dirty 比较。 */
+export function normalizePage(page: unknown): { id: string; title: string; purpose: string; bullets: string; pageType: string } {
+  return { id: '', title: '', purpose: '', bullets: '', pageType: '' }
+}
+
+/** 本地页数组 vs 已保存页数组是否发生了有效修改（大纲 dirty 判定）。 */
+export function outlineDiffers(localPages: unknown[], savedPages: unknown[]): boolean {
+  return false
+}
+
+/**
  * 任务索引条目（client 侧类型参考，形状镜像 host 的 `TaskIndexEntry`）：
  * `tasks.list` 返回的列表元素，列表渲染只读它（host 侧不逐任务读盘）。
  * `format` 目前只用于展示，`makeRecentView` 未消费它（保留给 Plan 2b 的筛选行）。

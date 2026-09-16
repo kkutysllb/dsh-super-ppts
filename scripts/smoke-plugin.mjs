@@ -820,10 +820,15 @@ vm.runInNewContext(clientSource, sandboxGlobal)
   check('client 声明 inject 服务', Array.isArray(loadedModule.inject) && loadedModule.inject.includes('slots') && loadedModule.inject.includes('locale'))
 }
 
+// locale.register 收集（外层作用域）：除存在性外把字典本体也留存，
+// Plan 2b Task 3b 的 i18n 断言按语言取字典键（zhDict()/enDict()）。
+const dictCalls = []
+const zhDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.zh || {}
+const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.en || {}
+
 // stub ctx：断言 settings.section 注册参数
 {
   const registrations = []
-  const dictCalls = []
   const ctxStub = {
     slots: {
       inject(slotType, loader) {
@@ -836,7 +841,7 @@ vm.runInNewContext(clientSource, sandboxGlobal)
       },
     },
     locale: {
-      register(ns, dicts) { dictCalls.push({ ns, has: !!dicts.zh && !!dicts.en }); return () => {} },
+      register(ns, dicts) { dictCalls.push({ ns, has: !!dicts.zh && !!dicts.en, dicts }); return () => {} },
       bind(ns) { return (key, params) => (dictsStub[ns]?.[key] ?? key) },
     },
     effect(fn, name) { const d = fn(); return typeof d === 'function' ? d : () => {} },
@@ -1833,6 +1838,59 @@ vm.runInNewContext(clientSource, sandboxGlobal)
   } catch (error) {
     // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
     check('Plan 2b Task 2 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
+}
+
+/* ═══ Plan 2b Task 3a：大纲页操作纯函数 ═══
+   多字段页列表编辑一律下沉为模块级纯函数（stub React 无重渲染），视图只做
+   setState 接线；冒烟直接断言纯函数的拷贝/换位/唯一 id/归一化比较语义。 */
+{
+  const O = loadedModule.__testHooks.outlineOps
+  try {
+    const pages = [
+      { id: 'p1', title: '结论摘要', purpose: '快速理解结论', bullets: ['收入+18%'], pageType: '结论页' },
+      { id: 'p2', title: '核心指标', bullets: ['a', 'b'] },
+      { id: 'p3', title: '趋势', bullets: [] },
+    ]
+    check('clonePages 深拷贝（改副本不动原数组）', (() => {
+      // 整理级修正（计划笔误）：原文 pages3() 每次调用重建样本，"改副本不动原数组"
+      // 无从对照；改用本块共享 pages——同一源实例上验证 title/bullets 均不被副本改动波及。
+      const clone = O.clonePages(pages)
+      clone[0].title = 'X'; clone[1].bullets.push('Z')
+      return pages[0].title === '结论摘要' && pages[1].bullets.length === 2
+    })())
+    check('movePage: 上移换位且不越界', O.movePage([{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }], 1, -1)[1].id === 'p1')
+    check('movePage: 越界返回原顺序（不抛）',
+      O.movePage([{ id: 'p1' }, { id: 'p2' }], 0, -1)[0].id === 'p1'
+      && O.movePage([{ id: 'p1' }, { id: 'p2' }], 1, 1)[1].id === 'p2')
+    check('copyPage: 复制到后一位且 id 全局唯一', (() => {
+      const next = O.copyPage([{ id: 'p1', title: 'A' }, { id: 'p2', title: 'B' }], 0)
+      return next.length === 3 && next[1].title === 'A' && next[1].id !== 'p1' && next[1].id !== 'p2'
+    })())
+    check('addPage: 追加新页（唯一 id + 注入标题）', (() => {
+      const next = O.addPage([{ id: 'p1' }, { id: 'p2' }], '新页面')
+      return next.length === 3 && next[2].id !== 'p1' && next[2].id !== 'p2' && next[2].title === '新页面'
+    })())
+    check('removePage: 删除目标页', O.removePage([{ id: 'p1' }, { id: 'p2' }], 0).length === 1)
+    check('parseBullets: 丢空行、保留内容原样', JSON.stringify(O.parseBullets('a\n\n b \n')) === JSON.stringify(['a', ' b ']))
+    check('outlineDiffers: 同构 false / 改标题或要点或类型 true', (() => {
+      const saved = [{ id: 'p1', title: 'A', bullets: ['x'], pageType: '结论页' }]
+      const same = O.clonePages(saved)
+      const t = O.clonePages(saved); t[0].title = 'B'
+      const b = O.clonePages(saved); b[0].bullets = ['x', 'y']
+      const ty = O.clonePages(saved); ty[0].pageType = '对比页'
+      const pu = O.clonePages(saved); pu[0].purpose = '目的'
+      return !O.outlineDiffers(same, saved) && O.outlineDiffers(t, saved)
+        && O.outlineDiffers(b, saved) && O.outlineDiffers(ty, saved) && O.outlineDiffers(pu, saved)
+    })())
+    check('outlineDiffers: undefined 与空串的 purpose 视为相同', (() => {
+      const saved = [{ id: 'p1', title: 'A', bullets: [] }]
+      const local = [{ id: 'p1', title: 'A', bullets: [], purpose: '' }]
+      return !O.outlineDiffers(local, saved)
+    })())
+  } catch (error) {
+    // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
+    check('Plan 2b Task 3a 断言块无异常执行', false, String(error && error.message).slice(0, 160))
   }
 }
 
