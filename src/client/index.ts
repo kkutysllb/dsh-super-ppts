@@ -37,7 +37,7 @@
  *    makePanelsView（壳）→ 各视图工厂；测试钩子见 bundle 末尾
  *    `exports.__testHooks`（MakePanelsView / viewForStatus /
  *    statusGroupOf / SP_VIEW_NEW / makeNewTaskView / makeRecentView /
- *    buildBriefFrom / createTask）。
+ *    makeTemplatePicker / buildBriefFrom / createTask）。
  *
  * 8. 新建任务视图（Task 3 已交付）：主题 textarea（sp-topic-input，rows 3）+
  *    快速开始 8 chip（sp-quick-row / sp-quick-chip，点一条填入 qNText）+
@@ -48,10 +48,21 @@
  *    sp-material-list / sp-material-item / sp-material-remove + 隐藏
  *    multiple file input）+ 主按钮 sp-start（文案 startTask，主题 trim 为空即
  *    disabled）。brief 由 buildBriefFrom 组装，templateId 三态保真。
- *    待接入：模板入口 sp-tpl-open 目前是占位按钮（Task 4 换成
- *    makeTemplatePicker）；素材只做本地登记（Task 5 接真实上传）；「开始制作」
- *    走 apply 注入的最小桥 createTask（只落盘，phase 恒为 'waiting-launch'，
- *    Task 6 换成完整 createTaskAndStart）。
+ *    模板入口 sp-tpl-open 已是**真实选择器**入口（Task 4，打开/关闭由视图层
+ *    状态控制，折叠态不渲染选择器）；素材只做本地登记（Task 5 接真实上传）；
+ *    「开始制作」走 apply 注入的最小桥 createTask（只落盘，phase 恒为
+ *    'waiting-launch'，Task 6 换成完整 createTaskAndStart）。
+ *
+ * 9. 模板选择器（Task 4 已交付）：makeTemplatePicker(t, options) 返回组件工厂，
+ *    options = { builtin, user, onPick, onClose }——内置来自 host 的
+ *    builtinTemplates，用户来自 templates（默认项由视图按 defaultTemplate 标
+ *    isDefault）。分组容器 sp-tpl-group-builtin / sp-tpl-group-user，卡片
+ *    sp-tpl-card + 占位预览 sp-tpl-thumb（内置取 accent，用户取中性灰）+
+ *    来源标签 sp-tpl-source（文本 tplBuiltin / tplUser，**不依赖颜色**）+
+ *    默认标记 sp-tpl-default + 使用按钮 sp-tpl-use；筛选 sp-tpl-filter
+ *    （全部/插件内置/我的模板）+ 搜索 sp-tpl-search 均为纯内存过滤。
+ *    「不使用模板」sp-tpl-none 与「跟随默认模板」sp-tpl-follow 是两个并列选项，
+ *    onPick 载荷与 buildBriefFrom 三态同构：模板对象 / 'none' / ''。
  *
  * APPLY NOTE：访问 ctx.slots / ctx.locale 需要两处同时声明——
  * - exports.inject = ['slots', 'locale', 'sessions', 'uiConversation',
@@ -209,7 +220,8 @@ export function makePanelsView(
  * 新建任务视图工厂（Task 3 已交付；真实形态见 lib/client.js 的 makeNewTaskView）。
  * 返回的组件视图根自持 `sp-view-new-task`，内部结构（className 是断言契约）：
  * `sp-topic-input`（textarea rows=3）/ `sp-quick-row` + `sp-quick-chip`×8 /
- * `sp-format-card`×2（选中 `sp-format-card-active`）/ `sp-tpl-open`（Task 4 占位）/
+ * `sp-format-card`×2（选中 `sp-format-card-active`）/ `sp-tpl-open`（模板选择器
+ * 入口按钮，Task 4 起打开态渲染 makeTemplatePicker 的 `sp-tpl-picker`）/
  * `sp-advanced-toggle` → `sp-advanced-body` / `sp-config-summary`（+`sp-summary-item`×5、
  * 展开明细 `sp-config-summary-extra`）/ `sp-material-add` + `sp-material-list` +
  * `sp-material-item` + `sp-material-remove` / `sp-start`（主题为空即 disabled）。
@@ -270,10 +282,46 @@ export function makeRecentView(
   return function RecentView() { return null }
 }
 
-/** 模板选择器工厂（Task 4 实现；真实形态见 lib/client.js 的 makeTemplatePicker）。 */
+/** 模板选择器的一张卡片（内置来自 builtinTemplates，用户来自 templates）。 */
+export interface PptsTemplateCard {
+  id: string
+  name: string
+  /** 内置模板为 'builtin'；用户模板由视图按来源补 'user'。 */
+  source?: 'builtin' | 'user'
+  description?: string
+  /** 内置模板的适用场景（用户模板通常没有）。 */
+  scenario?: string
+  tags?: string[]
+  accent?: string
+  /** 用户模板：是否当前默认模板（视图按 defaultTemplate 标注，渲染 sp-tpl-default）。 */
+  isDefault?: boolean
+}
+
+/**
+ * 模板选择器选项（Task 4 已交付；真实形态见 lib/client.js 的 makeTemplatePicker）。
+ * onPick 的载荷与 PptsBriefState.templateChoice 三态**同构**：
+ * 模板对象 / 'none'（不使用模板）/ ''（跟随默认模板）。
+ */
+export interface PptsTemplatePickerOptions {
+  builtin?: PptsTemplateCard[]
+  user?: PptsTemplateCard[]
+  onPick?(choice: '' | 'none' | { id: string; name: string; source: string }): void
+  onClose?(): void
+}
+
+/**
+ * 模板选择器工厂（Task 4 已交付；真实形态见 lib/client.js 的 makeTemplatePicker）。
+ * 结构（className 是断言契约，纯内存筛选、不发请求）：
+ * 根 `sp-tpl-picker`；筛选 `sp-tpl-filter`（全部/插件内置/我的模板）+ 搜索
+ * `sp-tpl-search`；分组容器 `sp-tpl-group-builtin` / `sp-tpl-group-user`；
+ * 卡片 `sp-tpl-card` = 占位预览 `sp-tpl-thumb`（内置取 accent，用户取中性灰）+
+ * 来源标签 `sp-tpl-source`（文本 tplBuiltin / tplUser，不依赖颜色）+ 可选默认标记
+ * `sp-tpl-default` + 使用按钮 `sp-tpl-use`；「不使用模板」`sp-tpl-none` 与
+ * 「跟随默认模板」`sp-tpl-follow` 是两个并列选项，另有管理入口 `sp-tpl-manage`。
+ */
 export function makeTemplatePicker(
   t: (key: string, params?: Record<string, unknown>) => string,
-  options: Record<string, unknown>,
+  options: PptsTemplatePickerOptions,
 ): (props?: Record<string, unknown>) => unknown {
   return function TemplatePicker() { return null }
 }

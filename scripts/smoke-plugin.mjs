@@ -892,6 +892,7 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console, fetch: stubFe
     ['viewForStatus', 'viewForStatus'],                               // 任务状态 → 恢复落点视图
     ['statusGroupOf', 'statusGroupOf'],                               // 任务状态 → 分组(最近任务)
     ['makeNewTaskView', 'makeNewTaskView'],                           // 新建任务视图(Task 3;视图根自持类名)
+    ['makeTemplatePicker', 'makeTemplatePicker'],                     // 模板选择器(Task 4;内置+用户分组,来源文本可辨)
     ['buildBriefFrom', 'buildBriefFrom'],                             // brief 组装(templateId 三态保真)
     ['createTask', 'createTask'],                                     // 任务创建最小桥(Task 6 换 createTaskAndStart)
   ]
@@ -1288,7 +1289,7 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console, fetch: stubFe
       && byClass(rendered, 'sp-material-input').length === 1
       && byClass(rendered, 'sp-material-input')[0].props.type === 'file'
       && byClass(rendered, 'sp-material-input')[0].props.multiple === true)
-  check('新建任务：模板入口是占位入口（Task 4 接真实选择器）', byClass(rendered, 'sp-tpl-open').length === 1)
+  check('新建任务：模板入口已在场（Task 4 已接真实选择器，见后置断言块）', byClass(rendered, 'sp-tpl-open').length === 1)
 
   // stub React 的 useState 值快照在渲染时就已固定（无 reconciler），因此「填主题再点开始」
   // 在同一次渲染里观察不到状态更新——改为断言守卫：主题为空时点主按钮**不发请求**。
@@ -1338,6 +1339,86 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console, fetch: stubFe
     ['startTask', 'topicPlaceholder', 'advancedOptions', 'configSummary', 'formatPptxCard', 'formatHtmlCard',
       'formatPptxHint', 'formatHtmlHint', 'taskStarted', 'taskWaitingLaunch', 'taskCreateFailed',
       'materialAdd', 'materialList', 'materialRemove', 'topicRequired']
+      .every(key => key in dictsSeen.zh && key in dictsSeen.en))
+}
+
+/* ═══ client 模板选择器：内置与用户模板必须分组且来源可辨 ═══ */
+{
+  const registrations = []
+  let dictsSeen = null
+  const ctxStub = {
+    slots: {
+      inject(slotType, loader) { loader() },
+      register(options, component) { registrations.push({ options, component }); return () => {} },
+    },
+    locale: {
+      register(ns, dicts) { dictsSeen = dicts; return () => {} },
+      bind() { return (key) => key },
+    },
+    sessions: {
+      list: { getSnapshot: () => ({ current: 'sess-1' }) },
+      scope: () => ({ conversation: { input: { for: () => ({ setDraft() {}, submit() {} }) } } }),
+      create: async () => 'sess-new',
+      open() {},
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [], phase: 'ready' }) } },
+    layout: { selectPanel() {} },
+    effect(fn) { return fn() },
+  }
+  loadedModule.apply(ctxStub)
+  const panel = registrations.find(r => r.options.name === 'main')
+  const tree = panel.component({})
+  // 模板选择器在展开「更多制作选项」后才出现（快速路径保持极简）
+  const advancedToggle = byClass(tree, 'sp-advanced-toggle')[0]
+  // 直接构造选择器组件的渲染结果做结构断言（不依赖交互模拟）
+  const picker = loadedModule.__testHooks.makeTemplatePicker(
+    (key) => key,
+    {
+      builtin: [
+        { id: 'builtin-exec-review', source: 'builtin', name: '高管经营汇报', scenario: '季度汇报', tags: ['商务'], ratio: '16:9', accent: '#2F6FEB' },
+      ],
+      user: [
+        { id: 't1', name: '公司品牌模板', description: '季度汇报用', isDefault: true },
+      ],
+      onPick: function () {},
+      onClose: function () {},
+    },
+  )
+  const rendered = picker({})
+  check('模板选择器：内置与用户模板分组渲染',
+    byClass(rendered, 'sp-tpl-group-builtin').length === 1
+      && byClass(rendered, 'sp-tpl-group-user').length === 1)
+  check('模板选择器：来源标签可辨（不依赖颜色）',
+    byClass(rendered, 'sp-tpl-source').length >= 2
+      && treeText(rendered).includes('tplBuiltin') && treeText(rendered).includes('tplUser'))
+  check('模板选择器：每张卡片有占位预览与名称',
+    byClass(rendered, 'sp-tpl-card').length === 2
+      && byClass(rendered, 'sp-tpl-thumb').length === 2
+      && treeText(rendered).includes('高管经营汇报')
+      && treeText(rendered).includes('公司品牌模板'))
+  check('模板选择器：默认模板有默认标记', byClass(rendered, 'sp-tpl-default').length === 1)
+  check('模板选择器：「不使用模板」与「跟随默认」是两个不同选项',
+    byClass(rendered, 'sp-tpl-none').length === 1
+      && byClass(rendered, 'sp-tpl-follow').length === 1)
+
+  // 结构契约的其余部分：筛选/搜索/使用按钮/管理入口 + 入口接线（Task 4 Step 5）。
+  check('模板选择器：筛选（全部/内置/我的）+ 搜索框 + 使用按钮 + 管理入口在场',
+    byClass(rendered, 'sp-tpl-filter').length === 1
+      && byClass(rendered, 'sp-tpl-filter')[0].children.length === 3
+      && byClass(rendered, 'sp-tpl-search').length === 1
+      && byClass(rendered, 'sp-tpl-use').length === 2
+      && byClass(rendered, 'sp-tpl-manage').length === 1)
+  // stub React 的 useState 不触发重渲染 → 「点入口后打开」观察不到；改为断言入口
+  // 可点 + 挂载点在场（源码对账）+ 折叠态不渲染选择器（快速路径保持极简）。
+  const viewRendered = renderTree(tree)
+  check('新建任务：模板入口已接到真实选择器（入口可点 + 挂载点在场 + 折叠态不渲染）',
+    typeof byClass(viewRendered, 'sp-tpl-open')[0].props.onClick === 'function'
+      && clientSource.includes('makeTemplatePicker(t, {')
+      && byClass(viewRendered, 'sp-tpl-picker').length === 0)
+
+  check('模板选择器：Task 4 Step 4 文案键齐备（双侧）',
+    ['tplPickerTitle', 'tplFilterAll', 'tplFilterBuiltin', 'tplFilterUser', 'tplSearch',
+      'tplBuiltin', 'tplUser', 'tplNone', 'tplNoneHint', 'tplFollow', 'tplFollowHint', 'tplManage', 'tplUse']
       .every(key => key in dictsSeen.zh && key in dictsSeen.en))
 }
 
