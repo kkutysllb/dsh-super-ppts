@@ -235,10 +235,13 @@ const tasksMod = await import('../lib/tasks.js')
     && tasksMod.loadTask(task.id)?.materials.length === 1)
 
   let emptyRejected = false
+  const materialsBefore = readdirSync(tasksMod.materialsDir(task.id)).length
   try {
-    await tasksMod.writeMaterial(task.id, 'empty.txt', (async function* { })(), 1024)
+    // 注意：generator 函数体必须至少含一个 yield，空体是语法错误
+    await tasksMod.writeMaterial(task.id, 'empty.txt', (async function* () { /* 空流：0 chunk */ })(), 1024)
   } catch (error) { emptyRejected = error.code === 'bad-request' }
-  check('空素材被拒绝且不留半截文件', emptyRejected)
+  check('空素材被拒绝且不留半截文件',
+    emptyRejected && readdirSync(tasksMod.materialsDir(task.id)).length === materialsBefore)
 
   let tooLargeRejected = false
   try {
