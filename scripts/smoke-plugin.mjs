@@ -920,6 +920,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['makeOutlineReviewView', 'makeOutlineReviewView'],               // 大纲确认视图(Plan 2b Task 3;确认门+未保存态)
     ['makeProgressView', 'makeProgressView'],                         // 生成进度视图(Plan 2b Task 4;六阶段时间线+恢复变体)
     ['makeResultView', 'makeResultView'],                             // 结果视图(Plan 2b Task 5;产物引用+继续修改)
+    ['sendToSession', 'sendToSession'],                               // 壳层→视图的会话消息桥(Plan 2b Task 6;apply 绑 ctx)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -2389,6 +2390,109 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   } catch (error) {
     // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
     check('Plan 2b Task 5 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
+}
+
+/* ═══ Plan 2b Task 6：壳层接线（联动逻辑下沉为可断言的模块级函数）═══
+   壳层联动依赖 stub React 不执行的 effect，因此断言策略按计划原文：
+   1) openTask 逻辑下沉为模块级 openTaskRecord(entry, deps)（返回 promise，await 判定）；
+   2) 路由判定 routeSubView(record)；3) forcedSub 清除判定 shouldClearForced(prev, next)；
+   4) 壳层渲染（tabs=2）+ effect 注册后手动执行命中 tasks.list；5) 分发/轮询接线用
+   **可破坏的静态锚点**断言（删接线即 FAIL，全部非恒真：定义行/导出行都不满足）。
+   整理级修正（计划 setup 瑕疵，断言语义与数量不变）：
+    ① shellTasks 前置到使用处之前——计划原文在其声明前引用，const TDZ 必抛；
+    ② tabCount 用 token 精确匹配——byClass('sp-tab') 子串会顺带命中容器 sp-tabs
+      （计数 3≠2；语义不变：视图切换按钮数）。 */
+{
+  const H = loadedModule.__testHooks
+  const t = (key) => key
+  const shellTasks = [
+    { id: 'k-wait', title: '等待大纲', status: 'waiting-outline', format: 'pptx', workspaceName: 'ws', updatedAt: '2026-09-16T05:00:00.000Z' },
+    { id: 'k-done', title: '已完成', status: 'completed', format: 'pptx', workspaceName: 'ws', updatedAt: '2026-09-16T04:00:00.000Z' },
+  ]
+  try {
+    // —— routeSubView 三落点（= viewForStatus 的记录形态包装）——
+    check('routeSubView: waiting-outline → 大纲视图工厂落点', H.routeSubView({ status: 'waiting-outline' }) === 'outline')
+    check('routeSubView: building/failed/needs-input → progress；completed → result', (() => {
+      return H.routeSubView({ status: 'building' }) === 'progress'
+        && H.routeSubView({ status: 'failed' }) === 'progress'
+        && H.routeSubView({ status: 'needs-input' }) === 'progress'
+        && H.routeSubView({ status: 'completed' }) === 'result'
+    })())
+
+    // —— openTaskRecord（成功 → onReady；404/异常 → onMissing 且绝不抛）——
+    const onReady = []; let missingCount = 0
+    const openApi = (method, body) => {
+      if (method === 'tasks.get' && body.id === 'k404') return Promise.reject(new Error('HTTP 404'))
+      if (method === 'tasks.get') return Promise.resolve({ id: body.id, status: 'waiting-outline', outline: { version: 1, pages: [] } })
+      return Promise.resolve({ tasks: [] })
+    }
+    await H.openTaskRecord({ id: 'k1' }, { api: openApi, onReady: (r) => onReady.push(r), onMissing: () => { missingCount += 1 } })
+    check('openTaskRecord: 成功 → onReady 收到完整记录', onReady.length === 1 && onReady[0].id === 'k1')
+    await H.openTaskRecord({ id: 'k404' }, { api: openApi, onReady: (r) => onReady.push(r), onMissing: () => { missingCount += 1 } })
+    check('openTaskRecord: 404 → onMissing 被调且不抛', missingCount === 1 && onReady.length === 1)
+
+    // —— forcedSub 清除判定 ——
+    check('shouldClearForced: 路由变化才清除（同视图刷新不清）',
+      H.shouldClearForced({ status: 'building' }, { status: 'waiting-outline' }) === true
+      && H.shouldClearForced({ status: 'building' }, { status: 'building' }) === false
+      && H.shouldClearForced({ status: 'failed' }, { status: 'waiting-outline' }) === true)
+
+    // —— attention 提示行（AC 2：存在待确认任务时顶部提示）——
+    check('attentionEntries: 抽出 attention 组条目（waiting-outline/needs-input），空列表 → 空',
+      H.attentionEntries(shellTasks).length === 1 && H.attentionEntries(shellTasks)[0].id === 'k-wait'
+      && H.attentionEntries([]).length === 0 && H.attentionEntries(null).length === 0)
+    check('attentionEntries: attention 组多条按 updatedAt 倒序（首条=最近更新，非 attention 剔除）', (() => {
+      const many = [
+        { id: 'a', status: 'needs-input', updatedAt: '2026-09-14T01:00:00.000Z' },
+        { id: 'b', status: 'waiting-outline', updatedAt: '2026-09-16T01:00:00.000Z' },
+        { id: 'c', status: 'building', updatedAt: '2026-09-17T01:00:00.000Z' },
+        { id: 'd', status: 'needs-input', updatedAt: '2026-09-15T01:00:00.000Z' },
+      ]
+      const got = H.attentionEntries(many).map((e) => e.id)
+      return got.length === 3 && got.join('') === 'bda'
+    })())
+    check('壳层静态锚点：sp-attention-hint 类名与 attentionEntries 已接线',
+      clientSource.includes('sp-attention-hint') && clientSource.includes('attentionEntries'))
+    check('壳层新类名有样式定义：sp-attention-hint / sp-task-error', (() => {
+      const defined = (name) => new RegExp('\\.' + name + '(?![A-Za-z0-9_-])').test(clientSource)
+      return defined('sp-attention-hint') && defined('sp-task-error')
+    })())
+
+    // —— 壳层渲染（tabs）与 effect 注册（refreshTasks / 轮询）——
+    let shellApiCalls = []
+    const shellApi = (method, body) => {
+      shellApiCalls.push({ method, body })
+      if (method === 'tasks.list') return Promise.resolve({ tasks: shellTasks })
+      return Promise.resolve({ id: 'k-wait', status: 'waiting-outline', outline: { version: 1, pages: [] } })
+    }
+    const beforeEffects = hookLog.effects.length
+    const panel = H.MakePanelsView(t, { api: shellApi, sendToSession: () => Promise.resolve('submitted') })({})
+    const tabCount = collectElements(panel).filter((el) => /(^|\s)sp-tab(\s|$)/.test(classOf(el))).length
+    // 手动执行已注册的 effect（refreshTasks / 轮询；返回函数则调用其 cancel）
+    const registered = hookLog.effects.slice(beforeEffects)
+    for (const fn of registered) { try { const d = fn(); if (typeof d === 'function') d(); } catch { /* 断言型 effect 容错 */ } }
+    check('壳层渲染 tabs（新建任务/最近任务）', tabCount === 2)
+    check('effect 注册了 tasks.list 刷新（手动执行后命中 tasks.list）', shellApiCalls.some((c) => c.method === 'tasks.list'))
+    check('壳层初始渲染不出现 sp-attention-hint（tasks=null → attentionEntries 空，提示行依赖列表数据）',
+      byClass(panel, 'sp-attention-hint').length === 0)
+
+    // —— 分发/轮询接线的静态锚点（三工厂调用点 / startTaskPolling 调用点 / 任务态分发）——
+    check('壳层静态锚点：三详情视图工厂已接入分发（createElement 调用点，非定义行）',
+      clientSource.includes('React.createElement(makeOutlineReviewView(t,')
+      && clientSource.includes('React.createElement(makeProgressView(t,')
+      && clientSource.includes('React.createElement(makeResultView(t,'))
+    check('壳层轮询锚点：详情 effect 用 isPollingStatus(active.status) 判定 + startTaskPolling(active.id 接线',
+      clientSource.includes('startTaskPolling(active.id')
+      && clientSource.includes('isPollingStatus(active.status)'))
+    check('壳层任务态锚点：SP_VIEW_TASK 参与视图分发 + taskOpenFailed 错误横幅接线',
+      clientSource.includes('view === SP_VIEW_TASK') && clientSource.includes('t("taskOpenFailed")'))
+    check('新 i18n 键齐全（zh+en）：attentionHint / taskOpenFailed',
+      zhDict().attentionHint !== undefined && zhDict().taskOpenFailed !== undefined
+      && enDict().attentionHint !== undefined && enDict().taskOpenFailed !== undefined)
+  } catch (error) {
+    // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
+    check('Plan 2b Task 6 断言块无异常执行', false, String(error && error.message).slice(0, 160))
   }
 }
 

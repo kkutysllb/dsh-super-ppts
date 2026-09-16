@@ -35,14 +35,19 @@
  *
  * 7. 任务面板壳（0.1.5 sidebar.panellist + main keyed）：主面板是
  *    makePanelsView 产出的**单列**任务工作区——顶部两个轻量视图切换
- *    （[新建任务][最近任务]）+ 视图分发 + 共享任务列表状态。视图是
+ *    （[新建任务][最近任务]，任务详情态都不高亮）+ 三态视图分发
+ *    （new-task / recent / **task 详情**，Plan 2b Task 6 接线：详情按
+ *    routeSubView(active) 落三视图，forcedSub 覆盖优先，活跃态 3s 轮询，
+ *    attention 提示行）+ 共享任务列表状态。视图是
  *    「工厂返回组件」形态（makeNewTaskView / makeRecentView /
  *    makeTemplatePicker），视图根**自持**容器类名
  *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动归宿主：
  *    **不自建**侧边栏 / 右侧固定栏 / 全屏容器 / 100vw / 100vh。
  *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV3
  *    → createTask/createTaskAndStart/buildTaskPrompt → 轮询基元
- *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ makePanelsView（壳）→
+ *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ 壳层联动纯函数
+ *    （routeSubView / shouldClearForced / attentionEntries / openTaskRecord /
+ *    byUpdatedDesc，Task 6）→ makePanelsView（壳）→
  *    各视图工厂（含大纲确认视图 makeOutlineReviewView + 页操作纯函数族、
  *    生成进度视图 makeProgressView + 时间线/事件纯函数 progressSteps /
  *    lastEventOfKind、结果视图 makeResultView + 复制原语 copyText，
@@ -50,6 +55,8 @@
  *    测试钩子见 bundle 末尾 `exports.__testHooks`
  *    （MakePanelsView / viewForStatus / statusGroupOf / SP_VIEW_NEW /
  *    SP_VIEW_TASK / isPollingStatus / startTaskPolling / SP_POLL_MS /
+ *    routeSubView / shouldClearForced / attentionEntries / openTaskRecord /
+ *    byUpdatedDesc /
  *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
  *    createTask / createTaskAndStart / buildTaskPrompt / outlineOps /
  *    makeOutlineReviewView / makeProgressView / progressSteps /
@@ -153,8 +160,10 @@ export function registerSettingsNavIcon(label: () => string): () => void {
 /* ── 任务面板壳 / 视图状态机（与 lib/client.js 同构，以其实现为准）─────
  * 真实分层：SP_* 常量 → api / uploadMaterial / sendToChatV3 →
  * 轮询基元（isPollingStatus / startTaskPolling / SP_POLL_STATUSES /
- * SP_POLL_MS）→ makePanelsView（面板壳）→ makeNewTaskView / makeRecentView /
- * makeTemplatePicker（视图工厂，返回组件）。
+ * SP_POLL_MS）→ 壳层联动纯函数（routeSubView / shouldClearForced /
+ * attentionEntries / openTaskRecord / byUpdatedDesc）→ makePanelsView（面板壳）
+ * → makeNewTaskView / makeRecentView / makeTemplatePicker /
+ * makeOutlineReviewView / makeProgressView / makeResultView（视图工厂，返回组件）。
  * 本节的函数体只是**类型参考占位**，真实形态见 lib/client.js 同名符号。
  * 旧工作台 makeWorkbenchComponent（v2：工作区选择行 + 状态文案）仍保留在
  * lib/client.js 内（其 useWorkspaces 选择器用法与加载/空/错误文案由新视图
@@ -167,7 +176,9 @@ export const SP_VIEW_RECENT = 'recent'
 export const SP_VIEW_TASK = 'task'
 
 /* 视图容器类名契约（视图根自持、壳层只传 props，不产生多余包裹层）：
- * 新建任务 → 'sp-view-new-task'；最近任务 → 'sp-view-recent'。 */
+ * 新建任务 → 'sp-view-new-task'；最近任务 → 'sp-view-recent'；
+ * 详情三视图 → 'sp-view-outline' / 'sp-view-progress' / 'sp-view-result'
+ * （Plan 2b Task 6 起接入壳层分发，根类名仍由各视图自持）。 */
 
 /**
  * 任务状态 → 恢复落点视图（规格「状态 → 恢复落点」表，Plan 2b D1 修正）：
@@ -239,7 +250,49 @@ export function startTaskPolling(
   return function cancel() { /* 类型参考占位，真实形态见 lib/client.js */ }
 }
 
-/** 面板壳 bridges：api + 任务启动编排 createTask（+ 素材上传 uploadMaterial）。 */
+/** 详情记录刷新后同步 tasks 列表条目的索引字段白名单（条目缺的字段不强造）。 */
+export const SP_TASK_INDEX_KEYS = ['title', 'status', 'format', 'workspaceName', 'createdAt', 'updatedAt']
+
+/** 组内排序：最近更新在前（缺失/非法时间按 0 处理，不抛）。makeRecentView 与 attentionEntries 共用。 */
+export function byUpdatedDesc(a: { updatedAt?: string }, b: { updatedAt?: string }): number {
+  return (Date.parse(String((b && b.updatedAt) || '')) || 0) - (Date.parse(String((a && a.updatedAt) || '')) || 0)
+}
+
+/** 详情路由判定（壳层分发与冒烟共用）：TaskRecord（任何带 status 的对象）→ 子视图落点。 */
+export function routeSubView(record?: { status?: string } | null): string {
+  return viewForStatus(record && record.status)
+}
+
+/** forcedSub（进度视图「返回修改大纲」）是否该被一次刷新清除：仅当恢复落点真的变化。 */
+export function shouldClearForced(
+  prev?: { status?: string } | null,
+  next?: { status?: string } | null,
+): boolean {
+  return routeSubView(prev) !== routeSubView(next)
+}
+
+/** attention 组任务（waiting-outline / needs-input）按 updatedAt 倒序；非数组 → 空列表。 */
+export function attentionEntries(tasks?: Array<{ status?: string; updatedAt?: string }> | null): Array<{ status?: string; updatedAt?: string }> {
+  return []
+}
+
+/**
+ * 打开一条任务：取完整记录（tasks.get）→ 存在 → onReady(record)；请求失败 /
+ * 记录缺失 → onMissing()，**绝不抛**。返回 promise（壳层与冒烟 await 判定）。
+ * （真实形态见 lib/client.js 同名函数；deps = { api?, onReady?, onMissing? }。）
+ */
+export function openTaskRecord(
+  entry: { id?: string } | null,
+  deps: {
+    api?(method: string, body?: unknown): Promise<unknown>
+    onReady?(record: unknown): void
+    onMissing?(): void
+  },
+): Promise<void> {
+  return Promise.resolve()
+}
+
+/** 面板壳 bridges：api + 任务启动编排 createTask（+ 素材上传 uploadMaterial + 会话桥 sendToSession / openSession）。 */
 export interface PptsPanelBridges {
   /** 任务数据面（既有 api）：POST /super-ppts/api/<method>（tasks.list / tasks.get / …）。 */
   api(method: string, body?: unknown): Promise<unknown>
@@ -261,13 +314,31 @@ export interface PptsPanelBridges {
   sendToChatV3?(ctx: PptsClientContext, text: string, workspaceId?: string): Promise<SendToChatV3Result>
   /** Plan 2b：会话消息桥（大纲修改指令 / 继续生成 / 补充信息 / 继续修改都走它）。 */
   sendToSession?(text: string, workspaceId?: string): Promise<'submitted' | 'copied' | 'none'>
+  /**
+   * Plan 2b Task 6：打开 Agent 会话（进度视图 sp-open-session 的桥，真实形态 =
+   * apply 里绑定 ctx 的 `function (workspaceId) { openWorkspace(ws); backToChat(ctx); }`）。
+   * 进度视图按无参契约调用，工作区 id 由壳层注入（active.workspace.id）。
+   */
+  openSession?(workspaceId?: string): void
 }
 
 /**
  * 面板壳工厂（真实实现见 lib/client.js 的 makePanelsView）：返回宿主 main
- * keyed 槽位使用的组件——顶部 `sp-tabs`（[新建任务][最近任务]），视图容器
- * `sp-panels`，按 view 分发到 makeNewTaskView / makeRecentView，并共享任务
- * 列表状态（tasks / loadErr / refresh）。
+ * keyed 槽位使用的组件。顶部 `sp-tabs`（[新建任务][最近任务]，任务详情态两个
+ * tab 都不带 sp-tab-active），根容器 `sp-panels`；head 下方按 attentionEntries
+ * (tasks) 渲染待办提示行 `sp-attention-hint`（含条数文案键 attentionHint，点击
+ * 打开最近更新的一条）。视图分发：
+ * - SP_VIEW_NEW → makeNewTaskView（onCreated 后回列表）；
+ * - SP_VIEW_RECENT → makeRecentView（onOpen=openTask 真实打开 / onNewTask 回新建）；
+ * - SP_VIEW_TASK → forcedSub（进度视图「返回修改大纲」覆盖）优先，否则
+ *   routeSubView(active)，分发 makeOutlineReviewView / makeProgressView /
+ *   makeResultView（三视图 onBack 回列表并 refreshTasks；onUpdated 换 active +
+ *   清 forcedSub + patchTasks 同步列表条目）；activeErr 且无 active → 错误横幅
+ *   `sp-task-error`（文案键 taskOpenFailed）+ 返回最近按钮。
+ * 轮询：active 且 isPollingStatus(active.status) 时注册 startTaskPolling(id,
+ * onPollTick, { api })（3s 固定间隔，effect 卸载即 cancel 停）；tick 换 active +
+ * 同步列表条目 + shouldClearForced(active, next) 时清 forcedSub。
+ * 壳层状态：view / tasks / loadErr / active / activeErr / forcedSub / busyOpen。
  */
 export function makePanelsView(
   t: (key: string, params?: Record<string, unknown>) => string,
@@ -760,8 +831,9 @@ export interface PptsTaskIndexEntry {
 /**
  * 最近任务视图选项（Task 7 已交付；真实形态见 lib/client.js 的 makeRecentView）。
  * tasks / loadErr / refresh 由面板壳共享的任务列表状态注入；onOpen / onNewTask
- * 是**恢复落点判定**的注入点（默认实现只返回 viewForStatus(status) / SP_VIEW_NEW，
- * Plan 2b 把它们接到视图状态机的 outline / progress / result 三个落点）。
+ * 是**恢复落点判定**的注入点（默认实现只返回 viewForStatus(status) / SP_VIEW_NEW 字符串——
+ * Plan 2b Task 6 起壳层传入真实实现：onOpen=openTask（openTaskRecord 取完整记录进
+ * 详情三视图）、onNewTask 切回新建任务视图）。
  */
 export interface PptsRecentViewOptions {
   tasks?: PptsTaskIndexEntry[]
@@ -782,7 +854,8 @@ export interface PptsRecentViewOptions {
  * **空分组不渲染**），组标题文案键 groupAttention / groupActive / groupFailed /
  * groupDone；条目 `sp-task-item` = 标题 `sp-task-title` + 状态徽标 `sp-task-status` +
  * 工作区名 `sp-work-name` + 更新时间 `sp-task-time` + 打开按钮 `sp-task-open`
- * （`onOpen(task)`，本任务只做 viewForStatus 判定，落点由 Plan 2b 接）。
+ * （`onOpen(task)`，Plan 2b Task 6 起壳层传入 openTask 真实打开，默认实现仍只做
+ * viewForStatus 判定）。
  * 空列表渲染 `sp-recent-empty`（文案 recentEmpty）；loadErr 非空渲染
  * `sp-recent-error` + 重试按钮 `sp-recent-retry`（文案 retry，点击 refresh）。
  * 未归类状态（cancelled / 未知）并入 active 容器，徽标仍显示真实状态。
