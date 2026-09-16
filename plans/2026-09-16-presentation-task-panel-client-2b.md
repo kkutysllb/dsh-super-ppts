@@ -1439,6 +1439,16 @@ Subagent-Driven：每个任务一个全新实现者 subagent（前台串行—�
   ensureDetailView 缓存组件类型」取代。
 - **反向验证**：分发还原内联工厂 → 两锚点 FAIL；outline 改回 `opts.task` →
   props 优先断言 FAIL；均还原后全绿。
+- **残留闭环（复审发现）**：详情三视图已缓存，但轮询 effect 只看 `active` +
+  `isPollingStatus`、不看 `view`——从最近打开活跃任务后切「新建任务」tab，轮询每
+  3s 仍 `setActive` 触发壳层 re-render，而 `makeNewTaskView` 是**内联工厂**（每次
+  新类型），remount 丢主题输入 / 素材队列 / formatTouched ref。修复：①轮询 effect
+  加 `if (view !== SP_VIEW_TASK) return undefined;` 且 `view` 参与 deps（离开详情
+  即 cancel，故 `makeNew/RecentView` 无需同法缓存）；②新增 `leaveTaskView()`
+  （清 active/forcedSub/activeErr），两 tab onClick 与 `backToRecent` 三出口统一
+  调用。冒烟 +2 锚点（轮询 view 门 + leaveTaskView ≥4 引用）；反向：删 view 门 →
+  门断言 FAIL、还原一 tab 的 leaveTaskView → 出口断言 FAIL。（`makeRecentView`
+  零 state，remount 不可见，不算缺陷。）
 
 ### R2【major】completed 全链路不可达（host 缺口；文件边界的授权例外）
 
@@ -1475,5 +1485,6 @@ Subagent-Driven：每个任务一个全新实现者 subagent（前台串行—�
   `copyText` / `routeSubView` / `openTaskRecord` 五对（src 侧参考声明均已在位，
   纯对账，无新增代码）。
 
-**收尾计数**：R1-R5 全落地后 `npm run build && npm run smoke` = **290 PASS / 0 FAIL**
-（发布基线 277：R1 +7−1、R2 +4、R3-R5 +3，哨兵 pair 扩至 47 对不另计）。
+**收尾计数**：R1-R5 全落地后 = 290 PASS；R1 残留闭环 +2（轮询 view 门 +
+leaveTaskView 出口），最终 `npm run build && npm run smoke` = **292 PASS / 0 FAIL**
+（发布基线 277：R1 +7−1、R2 +4、R3-R5 +3、残留 +2；哨兵 pair 扩至 48 对不另计）。

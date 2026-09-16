@@ -2533,6 +2533,16 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     check('壳层轮询锚点：详情 effect 用 isPollingStatus(active.status) 判定 + startTaskPolling(active.id 接线',
       clientSource.includes('startTaskPolling(active.id')
       && clientSource.includes('isPollingStatus(active.status)'))
+    // 实现后审查修正（R1 残留闭环）：轮询只随详情视图注册；离开详情（tab×2/back）清 active
+    check('轮询仅在详情视图注册（effect 含 view!==SP_VIEW_TASK 门且 view 参与 deps）',
+      clientSource.includes('if (view !== SP_VIEW_TASK) return undefined;')
+      && clientSource.includes('[view, active && active.id, active && active.status]'))
+    check('离开任务视图出口都走 leaveTaskView（定义 + 2 tab + backToRecent ≥4 调用点）', (() => {
+      const calls = clientSource.match(/leaveTaskView\(\)/g) || []
+      return clientSource.includes('function leaveTaskView()') && calls.length >= 4
+        && /onClick: function \(\) \{ leaveTaskView\(\); setView\(SP_VIEW_NEW\)/.test(clientSource)
+        && /onClick: function \(\) \{ leaveTaskView\(\); setView\(SP_VIEW_RECENT\)/.test(clientSource)
+    })())
     check('壳层任务态锚点：SP_VIEW_TASK 参与视图分发 + taskOpenFailed 错误横幅接线',
       clientSource.includes('view === SP_VIEW_TASK') && clientSource.includes('t("taskOpenFailed")'))
     check('新 i18n 键齐全（zh+en）：attentionHint / taskOpenFailed',
