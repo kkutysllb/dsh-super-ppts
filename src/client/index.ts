@@ -397,6 +397,87 @@ export function buildTaskPrompt(task: {
 }
 
 /**
+ * 任务消息构建器族（Plan 2b Task 2；真实形态见 lib/client.js 同名函数）：
+ * 全部是**纯字符串组装**（不触 ctx / React），供后续 Task 3/4/5 的详情视图经
+ * 壳层 `bridges.sendToSession(text, workspaceId)` 桥投递给 Agent。约定每条
+ * 都内嵌「任务 ID：<id>」，Agent 据此调用 ppts_task 续跑任务。
+ */
+export interface PptsPromptTask {
+  id?: string
+  outlineVersion?: number
+  confirmedOutlineVersion?: number
+  outline?: { version?: number; pages?: Array<{ id?: string; title?: string }> }
+  artifacts?: Array<{ type?: string; path?: string; status?: string }>
+}
+
+/** 确认大纲后的继续生成指令：按已确认大纲逐页生成 + artifact 登记 + 推进 completed。 */
+export function buildContinuePrompt(task: PptsPromptTask): string {
+  const outline = task?.outline ?? {}
+  const pages = Array.isArray(outline.pages) ? outline.pages : []
+  const version = task?.confirmedOutlineVersion || outline.version || 0
+  return [
+    '大纲已确认，请继续制作演示文稿。',
+    '任务 ID：' + task?.id,
+    '已确认大纲版本：v' + version + '（' + pages.length + ' 页）',
+    '请按已确认大纲逐页生成内容与视觉；完成后用 ppts_task 的 artifact 动作登记产物文件，并将任务状态推进到 completed。',
+  ].join('\n')
+}
+
+/** 自然语言修改大纲指令：Agent 提交新版本大纲后必须停下等再次确认（空指令抛错）。 */
+export function buildOutlineRevisePrompt(task: PptsPromptTask, instruction: string): string {
+  const text = String(instruction || '').trim()
+  if (text === '') throw new Error('缺少修改指令')
+  const outline = task?.outline ?? {}
+  const pages = Array.isArray(outline.pages) ? outline.pages : []
+  return [
+    '请根据用户指令修改演示大纲。',
+    '任务 ID：' + task?.id,
+    '当前大纲版本：v' + (task?.outlineVersion || 0) + '（' + pages.length + ' 页）',
+    '用户指令：' + text,
+    '请调用 ppts_task 的 outline 动作提交修改后的完整大纲（生成新版本），然后停下等待用户在工作台再次确认，不要直接生成 PPTX/HTML。',
+  ].join('\n')
+}
+
+/** needs-input 的补充信息投递（问题文本来自面板展示的同一条事件；空回答抛错）。 */
+export function buildNeedsInputPrompt(task: PptsPromptTask, question: string, answer: string): string {
+  const q = String(question || '').trim()
+  const a = String(answer || '').trim()
+  if (a === '') throw new Error('缺少补充内容')
+  return [
+    '补充信息（演示任务）。',
+    '任务 ID：' + task?.id,
+    q ? '待补充问题：' + q : '',
+    '用户补充：' + a,
+    '请基于以上信息继续任务。',
+  ].filter((line) => line !== '').join('\n')
+}
+
+/** 已完成任务的自然语言继续修改（默认只重做相关部分；空指令抛错）。 */
+export function buildContinueEditPrompt(task: PptsPromptTask, instruction: string): string {
+  const text = String(instruction || '').trim()
+  if (text === '') throw new Error('缺少修改指令')
+  const artifacts = task?.artifacts ?? []
+  const lines = ['继续修改已完成的演示文稿。', '任务 ID：' + task?.id]
+  if (artifacts.length > 0) {
+    lines.push('现有产物：')
+    for (const a of artifacts) lines.push('- ' + a.path)
+  }
+  lines.push('修改要求：' + text)
+  lines.push('只重做与要求相关的部分，不要整份重新生成；完成后重新登记产物并推进任务状态。')
+  return lines.join('\n')
+}
+
+/** 产物丢失后的重新生成指令（结果页「重新生成」按钮；基于已确认大纲重登记新路径）。 */
+export function buildRegeneratePrompt(task: PptsPromptTask, artifact: { type?: string; path?: string; status?: string }): string {
+  return [
+    '演示任务的产物文件已丢失，请重新生成。',
+    '任务 ID：' + task?.id,
+    '丢失产物：' + artifact?.type + '（原路径：' + artifact?.path + '）',
+    '请基于已确认大纲重新生成该产物，并用 ppts_task 的 artifact 动作重新登记新路径。',
+  ].join('\n')
+}
+
+/**
  * 任务索引条目（client 侧类型参考，形状镜像 host 的 `TaskIndexEntry`）：
  * `tasks.list` 返回的列表元素，列表渲染只读它（host 侧不逐任务读盘）。
  * `format` 目前只用于展示，`makeRecentView` 未消费它（保留给 Plan 2b 的筛选行）。

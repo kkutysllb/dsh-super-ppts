@@ -910,6 +910,8 @@ vm.runInNewContext(clientSource, sandboxGlobal)
     ['SP_VIEW_TASK', 'SP_VIEW_TASK'],                                 // 任务详情视图(Plan 2b;打开任务的路由落点)
     ['isPollingStatus', 'isPollingStatus'],                           // 活跃态白名单(终态停止轮询)
     ['startTaskPolling', 'startTaskPolling'],                         // 轮询循环(可注入 schedule,3s 固定间隔)
+    ['buildContinuePrompt', 'buildContinuePrompt'],                   // 大纲确认后的继续生成指令(Task 2)
+    ['buildOutlineRevisePrompt', 'buildOutlineRevisePrompt'],         // 自然语言修改大纲指令(Task 2)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -1773,6 +1775,64 @@ vm.runInNewContext(clientSource, sandboxGlobal)
   } catch (error) {
     // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
     check('Plan 2b Task 1 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
+}
+
+/* ═══ Plan 2b Task 2：任务提示词构建器（纯函数）═══
+   纯字符串组装（不触 ctx / React）；后续 Task 3/4/5 的视图经会话桥投递给 Agent。 */
+{
+  const B = loadedModule.__testHooks
+  try {
+    const task = {
+      id: 'k9',
+      status: 'waiting-outline',
+      workspace: { id: 'ws1', name: '季度汇报', path: '/ws' },
+      outlineVersion: 2,
+      confirmedOutlineVersion: 2,
+      outline: { version: 2, pages: [{ id: 'p1', title: '结论摘要', bullets: ['a'] }, { id: 'p2', title: '核心指标', bullets: [] }] },
+      brief: { topic: 'Q3 经营复盘', format: 'pptx' },
+      materials: [{ name: 'q3.xlsx', size: 1, path: '/t/k9/materials/q3.xlsx', status: 'ready' }],
+      artifacts: [],
+      events: [],
+    }
+    const full = B.buildTaskPrompt(task)
+    check('buildContinuePrompt: 含任务 id / 已确认版本 / 页数 / artifact 登记要求', (() => {
+      const text = B.buildContinuePrompt(task)
+      return text.includes('任务 ID：k9') && text.includes('v2') && text.includes('2 页')
+        && text.includes('artifact') && text.includes('completed')
+    })())
+    check('buildOutlineRevisePrompt: 含任务 id / 当前版本 / 指令 / outline 动作 / 停等确认', (() => {
+      const text = B.buildOutlineRevisePrompt(task, '合并第 3、4 页')
+      return text.includes('任务 ID：k9') && text.includes('v2') && text.includes('合并第 3、4 页')
+        && text.includes('outline') && text.includes('等待用户')
+    })())
+    check('buildOutlineRevisePrompt: 空指令抛错', (() => {
+      try { B.buildOutlineRevisePrompt(task, '   '); return false } catch { return true }
+    })())
+    check('buildNeedsInputPrompt: 含任务 id / 问题 / 回答', (() => {
+      const text = B.buildNeedsInputPrompt(task, '利润口径？', '只看华东区')
+      return text.includes('任务 ID：k9') && text.includes('利润口径？') && text.includes('只看华东区')
+    })())
+    check('buildNeedsInputPrompt: 空回答抛错', (() => {
+      try { B.buildNeedsInputPrompt(task, 'q', '  '); return false } catch { return true }
+    })())
+    check('buildContinueEditPrompt: 含任务 id / 产物路径 / 只重做相关部分', (() => {
+      const withArtifacts = Object.assign({}, task, { artifacts: [{ type: 'pptx', path: '/ws/deck.pptx', status: 'ready' }] })
+      const text = B.buildContinueEditPrompt(withArtifacts, '把第 3 页改成折线图')
+      return text.includes('任务 ID：k9') && text.includes('/ws/deck.pptx') && text.includes('把第 3 页改成折线图')
+    })())
+    check('buildContinueEditPrompt: 空指令抛错', (() => {
+      try { B.buildContinueEditPrompt(task, ''); return false } catch { return true }
+    })())
+    check('buildRegeneratePrompt: 含任务 id / 产物类型 / 重新登记要求', (() => {
+      const text = B.buildRegeneratePrompt(task, { type: 'pptx', path: '/ws/old.pptx', status: 'missing' })
+      return text.includes('任务 ID：k9') && text.includes('pptx') && text.includes('artifact')
+    })())
+    check('buildTaskPrompt 不回归：Brief 文本仍含任务 id 与素材路径（Task 6 契约）',
+      full.includes('任务 ID：k9') && full.includes('/t/k9/materials/q3.xlsx'))
+  } catch (error) {
+    // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
+    check('Plan 2b Task 2 断言块无异常执行', false, String(error && error.message).slice(0, 160))
   }
 }
 
