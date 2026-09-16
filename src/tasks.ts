@@ -6,8 +6,9 @@
  * - 单任务损坏（坏 JSON / 形态不符）改名 *.corrupt-* 留底，列表由索引兜底，
  *   绝不让后续写入用空数据静默覆盖既有记录；
  * - index.json 只是列表缓存，**磁盘任务目录才是真源**：索引缺失 / 损坏 / 条目数少于
- *   磁盘任务目录数时从任务目录重建；不做上限裁剪（按 updatedAt 裁剪会让磁盘上存在的
- *   任务永久不可见，且恰好挤出「等待用户确认最久」的任务，与恢复优先级自相矛盾）；
+ *   「含 task.json 的任务目录」数时从任务目录重建；缓存里磁盘已无真源的条目（幽灵）
+ *   在加载时剔除；不做上限裁剪（按 updatedAt 裁剪会让磁盘上存在的任务永久不可见，
+ *   且恰好挤出「等待用户确认最久」的任务，与恢复优先级自相矛盾）；
  * - 目录名即 taskId（生成后不可变；重命名只改 task.json 与索引标题）；
  * - 全部路径在 TASKS_ROOT 之下闭合，taskId 与大纲版本号经校验后才拼路径。
  */
@@ -281,6 +282,24 @@ function taskDirNames(): string[] {
   }
 }
 
+/**
+ * 真源口径：磁盘上「含 task.json」的任务目录名集合。
+ * 只做 existsSync 存在性判断、**不解析 JSON**：被 quarantine 掉 task.json 的目录（只剩
+ * task.json.corrupt-*）不再计入 —— 否则「缓存条目数 < 目录名数」恒成立，每次 loadIndex
+ * 都会全盘解析（缺陷 2）。返回 null = 目录列举失败，真源不可知：调用方保持「出错即用缓存」。
+ */
+function liveTaskDirs(): Set<string> | null {
+  let names: string[]
+  try {
+    names = readdirSync(TASKS_ROOT, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && TASK_ID_RE.test(entry.name))
+      .map(entry => entry.name)
+  } catch {
+    return null
+  }
+  return new Set(names.filter(name => existsSync(taskFile(name))))
+}
+
 function byUpdatedAtDesc(entries: TaskIndexEntry[]): TaskIndexEntry[] {
   return [...entries].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
 }
@@ -311,15 +330,33 @@ function persistIndex(entries: TaskIndexEntry[]): void {
 }
 
 /**
- * 读索引。索引只是缓存、磁盘任务目录才是真源：文件缺失 / 损坏，或条目数少于磁盘任务
- * 目录数（被裁过 / 丢过）时从磁盘重建；条目数不少则直接用缓存（读取路径不写盘）。
+ * 读索引。索引只是缓存、磁盘任务目录才是真源：
+ * - 文件缺失 / 损坏 → 整份从磁盘重建；
+ * - 缓存里 id 在磁盘上已无「含 task.json 的目录」的条目 = 幽灵条目（任务目录被手工删除，
+ *   或 task.json 已被 quarantine 改名）→ 加载时剔除并回写索引，否则列表会一直显示一个
+ *   loadTask() 返回 null、点不开的任务（缺陷 1）；
+ * - 剔除后条目数仍不少于「含 task.json 的目录」数 → 直接用缓存（读取路径不写盘、不解析 JSON）；
+ * - 少于 → 从磁盘重建补条目；重建补不出更多时仍用缓存。
  */
 export function loadIndex(): TaskIndex {
   const cached = readIndexEntries()
-  if (cached !== null && cached.length >= taskDirNames().length) return { tasks: cached }
+  if (cached === null) {
+    // 索引缺失 / 损坏：整份重建（空库不落盘，保持「无任务即无索引文件」）。
+    const rebuilt = scanDiskIndex()
+    if (rebuilt.length === 0) return emptyIndex()
+    persistIndex(rebuilt)
+    return { tasks: rebuilt }
+  }
+  const live = liveTaskDirs()
+  // 真源不可知（目录列举失败）时不动缓存：不剔除条目、不重建，与修复前的降级行为一致。
+  if (live === null) return { tasks: cached }
+  const pruned = cached.filter(entry => live.has(entry.id))
+  // 剔除过即回写：不落盘的话幽灵条目下次还会被读出来。
+  if (pruned.length !== cached.length) persistIndex(pruned)
+  if (pruned.length >= live.size) return { tasks: pruned }
   const rebuilt = scanDiskIndex()
   // 只有重建真能补出更多条目才重建：坏目录（task.json 已留底改名）不算「索引缺条目」。
-  if (cached !== null && cached.length >= rebuilt.length) return { tasks: cached }
+  if (pruned.length >= rebuilt.length) return { tasks: pruned }
   if (rebuilt.length === 0) return emptyIndex()
   persistIndex(rebuilt)
   return { tasks: rebuilt }

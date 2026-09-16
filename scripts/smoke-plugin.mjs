@@ -303,8 +303,10 @@ const tasksMod = await import('../lib/tasks.js')
       workspace: { id: 'w', name: 'w', path: '/p' },
     }).id)
   }
+  // 真源口径：只数「含 task.json」的目录。上方「损坏任务」的 task.json 已被 quarantine 改名，
+  // 该目录不再是索引真源 —— 旧口径（数全部目录）把它的幽灵条目算进等式，恰好让等式成立。
   const diskTaskDirs = readdirSync(tasksMod.TASKS_ROOT, { withFileTypes: true })
-    .filter(entry => entry.isDirectory()).length
+    .filter(entry => entry.isDirectory() && existsSync(join(tasksMod.TASKS_ROOT, entry.name, 'task.json'))).length
   const indexEntries = tasksMod.loadIndex().tasks.length
   check('索引无损（条目数 === 磁盘任务目录数，不再按上限裁剪）',
     indexEntries === diskTaskDirs, `index=${indexEntries} disk=${diskTaskDirs}`)
@@ -359,6 +361,59 @@ const tasksMod = await import('../lib/tasks.js')
     indexSurvived && recovered.tasks.some(item => item.id === probe.id)
       && readdirSync(tasksMod.TASKS_ROOT).some(name => name.startsWith('index.json.corrupt-')),
     `rebuilt=${recovered.tasks.length}`)
+}
+
+// 幽灵条目：手工删掉任务目录后，索引里的条目必须在下次 loadIndex 被剔除并回写。
+// 反例（修复前）：缓存条目数 >= 目录名数 判定命中快路径，幽灵条目留在列表里，
+// 而 loadTask(它) 恒为 null —— 面板上多出一个点不开的任务。
+{
+  const ghost = tasksMod.createTask({
+    title: '手工删目录探针',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  check('前置：新任务已进索引与列表',
+    tasksMod.loadIndex().tasks.some(item => item.id === ghost.id)
+      && tasksMod.listTasks().some(item => item.id === ghost.id))
+
+  rmSync(tasksMod.taskDir(ghost.id), { recursive: true, force: true })
+  const reloaded = tasksMod.loadIndex()
+  const persisted = JSON.parse(readFileSync(tasksMod.TASK_INDEX_FILE, 'utf8'))
+  check('幽灵条目（任务目录已手工删除）在 loadIndex 时被剔除并回写索引',
+    !reloaded.tasks.some(item => item.id === ghost.id)
+      && !tasksMod.listTasks().some(item => item.id === ghost.id)
+      && !persisted.tasks.some(item => item.id === ghost.id),
+    `reloaded=${reloaded.tasks.length} persisted=${persisted.tasks.length}`)
+}
+
+// 真源计数口径：只有「含 task.json 的目录」才算索引真源，无 task.json 的残留目录（quarantine
+// 后的目录、空目录）不得触发全盘扫描。见证物：全盘扫描会解析每个 task.json，并对坏 JSON 做
+// quarantine 留底 —— 快路径完全不碰文件，故坏 task.json 必须原样留在磁盘上。
+{
+  const healthy = tasksMod.createTask({
+    title: '口径探针（健康）',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  const laterBroken = tasksMod.createTask({
+    title: '口径探针（task.json 将写坏）',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  // 模拟 quarantine 残留：有目录、无 task.json（旧口径把它计进「目录数」→ 每次 load 全盘重建）
+  mkdirSync(join(tasksMod.TASKS_ROOT, 'kresiduereadme'), { recursive: true })
+  // 坏 JSON 但文件仍在：该目录仍计入真源口径，此时索引条目数 === 含 task.json 的目录数
+  writeFileSync(tasksMod.taskFile(laterBroken.id), '{oops 坏 JSON', 'utf8')
+  const dirsWithJson = readdirSync(tasksMod.TASKS_ROOT, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && existsSync(join(tasksMod.TASKS_ROOT, entry.name, 'task.json'))).length
+  const allDirs = readdirSync(tasksMod.TASKS_ROOT, { withFileTypes: true })
+    .filter(entry => entry.isDirectory()).length
+  const listed = tasksMod.listTasks()
+  const jsonIntact = existsSync(tasksMod.taskFile(laterBroken.id))
+  check('真源口径 = 含 task.json 的目录数 → 无 task.json 的残留目录不再触发全盘扫描',
+    listed.length === dirsWithJson && allDirs > dirsWithJson && jsonIntact
+      && listed.some(item => item.id === healthy.id) && listed.some(item => item.id === laterBroken.id),
+    `index=${listed.length} withJson=${dirsWithJson} allDirs=${allDirs} brokenJsonIntact=${jsonIntact}`)
 }
 
 disposeRoutes()
