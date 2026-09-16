@@ -898,9 +898,14 @@ vm.runInNewContext(clientSource, sandboxGlobal)
     ['makeNewTaskView', 'makeNewTaskView'],                           // 新建任务视图(Task 3;视图根自持类名)
     ['makeTemplatePicker', 'makeTemplatePicker'],                     // 模板选择器(Task 4;内置+用户分组,来源文本可辨)
     ['buildBriefFrom', 'buildBriefFrom'],                             // brief 组装(templateId 三态保真)
-    ['createTask', 'createTask'],                                     // 任务创建最小桥(Task 6 换 createTaskAndStart)
+    ['createTask', 'createTask'],                                     // 任务落盘桥(Task 6 起为 createTaskAndStart 第 1 步)
     ['uploadMaterial', 'uploadMaterial'],                             // 素材上传(Task 5;原始流式 POST)
     ['/super-ppts/tasks/upload', '/super-ppts/tasks/upload'],         // 任务素材路由(与 host routes.ts 同路径)
+    ['sendToChatV3', 'sendToChatV3'],                                 // 会话桥 v3(Task 6;模块级,sendToChatV3(ctx,text,ws))
+    ['createTaskAndStart', 'createTaskAndStart'],                     // 任务启动编排(Task 6;落盘→上传→提交→状态推进)
+    ['buildTaskPrompt', 'buildTaskPrompt'],                           // 投递给 Agent 的 Brief 组装(内嵌任务 ID)
+    ['tasks.create', 'tasks.create'],                                 // 先落盘再启动(顺序不可颠倒)
+    ['submit', 'submit'],                                             // v3 关键一步:自动提交(用户无需回车)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -1486,6 +1491,157 @@ vm.runInNewContext(clientSource, sandboxGlobal)
   check('素材上传：复原后数据面仍走记录桩（假 fetch 不残留）',
     fetchCalls.length === callsBeforeProbe + 1 && uploaded.length === 1
       && fetchCalls[fetchCalls.length - 1].url.endsWith('/super-ppts/api/tasks.create'))
+}
+
+/* ═══ client 会话桥 v3：直接开始制作（setDraft + submit） ═══ */
+{
+  const calls = []
+  const ctxStub = {
+    slots: { inject(slotType, loader) { loader() }, register() { return () => {} } },
+    locale: { register() { return () => {} }, bind() { return (key) => key } },
+    sessions: {
+      list: { getSnapshot: () => ({ current: 'sess-1' }) },
+      scope(id) {
+        calls.push({ scope: id });
+        return { conversation: { input: { for: () => ({
+          setDraft(text) { calls.push({ setDraft: text }) },
+          submit() { calls.push({ submit: true }) },
+        }) } } };
+      },
+      create: async () => 'sess-new',
+      open(id) { calls.push({ open: id }) },
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'ws1', sessionIds: ['sess-1'] }], phase: 'ready' }) } },
+    layout: { selectPanel() {} },
+    effect(fn) { return fn() },
+  }
+  loadedModule.apply(ctxStub)
+  const result = await loadedModule.__testHooks.sendToChatV3(ctxStub, '任务 ID：k123\n主题：Q3 复盘', 'ws1')
+  check('会话桥 v3：把 Brief 写入会话输入框（setDraft）',
+    calls.some(call => typeof call.setDraft === 'string' && call.setDraft.indexOf('任务 ID：k123') !== -1))
+  check('会话桥 v3：随后自动提交（submit），用户无需回车',
+    calls.some(call => call.submit === true) && result === 'submitted')
+  check('会话桥 v3：setDraft 先于 submit',
+    calls.findIndex(call => call.setDraft) < calls.findIndex(call => call.submit))
+
+  // 降级：输入面不可达时必须回退剪贴板，而不是静默失败
+  const noInputCtx = JSON.parse(JSON.stringify({ sessions: null }))
+  noInputCtx.sessions = { list: { getSnapshot: () => ({ current: 'sess-1' }) }, scope: () => undefined, create: async () => 's', open() {} }
+  const fallbackResult = await loadedModule.__testHooks.sendToChatV3(noInputCtx, 'brief text', '')
+  check('会话桥 v3：输入面不可达时降级剪贴板（返回 copied 或 none，不抛错）',
+    fallbackResult === 'copied' || fallbackResult === 'none')
+}
+
+/* ═══ client 会话桥 v3 · 任务启动编排（Task 6 补充断言） ═══
+   计划 Step 1 只覆盖桥本身；下面把「先落盘再启动」「提交不可达 → 可恢复状态」
+   两个硬约束钉成断言：落盘失败必须明确报错（不得假装已创建），启动链路失败
+   必须置 waiting-launch（可重试），而不是 failed/started。 */
+{
+  const order = []
+  const drafts = []
+  const makeCtx = (shell) => ({
+    slots: { inject(slotType, loader) { loader() }, register() { return () => {} } },
+    locale: { register() { return () => {} }, bind() { return (key) => key } },
+    sessions: {
+      list: { getSnapshot: () => ({ current: 'sess-1' }) },
+      scope() { return { conversation: { input: { for: () => shell } } } },
+      create: async () => 'sess-new',
+      open() {},
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'ws1', sessionIds: ['sess-1'] }], phase: 'ready' }) } },
+    layout: { selectPanel() {} },
+    effect(fn) { return fn() },
+  })
+  const shellOk = {
+    setDraft(text) { order.push('setDraft'); drafts.push(text) },
+    submit() { order.push('submit') },
+  }
+  const taskRecord = { id: 'task-1', status: 'creating', brief: { topic: 'Q3 复盘', format: 'pptx' }, materials: [] }
+  const makeFetch = (failCreate) => (url, init) => {
+    const path = String(url).split('?')[0]
+    const body = init && init.body ? JSON.parse(String(init.body)) : {}
+    if (path.endsWith('/super-ppts/api/tasks.create')) {
+      order.push(failCreate ? 'tasks.create:rejected' : 'tasks.create')
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify(failCreate
+        ? { ok: false, error: { code: 'fs-error', message: '任务记录写入失败' } }
+        : { ok: true, value: taskRecord })) })
+    }
+    order.push('tasks.update:' + (body.patch && body.patch.status))
+    return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ ok: true, value: Object.assign({}, taskRecord, body.patch) })) })
+  }
+  const startInput = (materials) => ({
+    title: 'Q3 复盘',
+    brief: { topic: 'Q3 复盘', format: 'pptx' },
+    workspace: { id: 'ws1', name: '季度', path: '/tmp/ws1' },
+    materials: materials || [],
+  })
+
+  const originalFetch = globalThis.fetch
+  const originalSandboxFetch = sandboxGlobal.fetch
+  try {
+    const fakeFetch = makeFetch(false)
+    globalThis.fetch = fakeFetch
+    sandboxGlobal.fetch = fakeFetch
+    const started = await loadedModule.__testHooks.createTaskAndStart(makeCtx(shellOk), startInput())
+    check('编排：先落盘（tasks.create）再启动（setDraft → submit），顺序不可颠倒',
+      order[0] === 'tasks.create' && order.indexOf('setDraft') > 0
+        && order.indexOf('setDraft') < order.indexOf('submit'))
+    check('编排：提交成功 → phase "started" 且任务状态推进到 analyzing',
+      started.phase === 'started' && started.task.status === 'analyzing'
+        && order.indexOf('tasks.update:analyzing') !== -1)
+    check('编排：投递给 Agent 的 Brief 内嵌「任务 ID：」（Agent 据此调 ppts_task）',
+      drafts.length === 1 && drafts[0].indexOf('任务 ID：task-1') !== -1)
+
+    // 素材：视图条目形如 { name, size, status, file, upload }——真实字节在 file，
+    // 上传通道在 upload；两者都要被编排用上（taskId + 原始 File），路径进 Brief。
+    order.length = 0; drafts.length = 0
+    const uploads = []
+    const rawFile = new BlobContent('Q3.xlsx', 2048)
+    await loadedModule.__testHooks.createTaskAndStart(makeCtx(shellOk), startInput([{
+      name: 'Q3.xlsx', size: 2048, status: 'pending', file: rawFile,
+      upload: (taskId, raw) => {
+        uploads.push({ taskId, raw })
+        return Promise.resolve({ name: 'Q3.xlsx', size: 2048, path: '/tmp/m/Q3.xlsx' })
+      },
+    }]))
+    check('编排：素材按视图条目（file 字节 + upload 通道）逐个上传，路径写进 Brief',
+      uploads.length === 1 && uploads[0].taskId === 'task-1' && uploads[0].raw === rawFile
+        && drafts[0].indexOf('/tmp/m/Q3.xlsx') !== -1)
+
+    // 单素材失败不阻塞启动（只记错误，phase 照常推进）
+    order.length = 0; drafts.length = 0
+    const failedUpload = await loadedModule.__testHooks.createTaskAndStart(makeCtx(shellOk), startInput([{
+      name: 'broken.bin', size: 4, status: 'pending', file: new BlobContent('broken.bin', 4),
+      upload: () => Promise.reject(new Error('素材超过大小上限')),
+    }]))
+    check('编排：单个素材上传失败不阻塞启动（phase 仍为 started）',
+      failedUpload.phase === 'started' && order.indexOf('submit') !== -1)
+
+    // 提交面不可达（shell 无 submit）→ 不得假装已启动，任务置 waiting-launch
+    order.length = 0; drafts.length = 0
+    const noSubmit = await loadedModule.__testHooks.createTaskAndStart(makeCtx({
+      setDraft(text) { order.push('setDraft'); drafts.push(text) },
+    }), startInput())
+    check('编排：submit 缺失 → phase "waiting-launch" + 任务置 waiting-launch（可重试），绝不 started',
+      noSubmit.phase === 'waiting-launch' && noSubmit.task.status === 'waiting-launch'
+        && order.indexOf('tasks.update:waiting-launch') !== -1 && order.indexOf('submit') === -1)
+
+    // 落盘失败 → 明确报错，且不得发生任何会话写入/提交（无孤儿启动）
+    order.length = 0; drafts.length = 0
+    const failFetch = makeFetch(true)
+    globalThis.fetch = failFetch
+    sandboxGlobal.fetch = failFetch
+    let createRejected = false
+    await loadedModule.__testHooks.createTaskAndStart(makeCtx(shellOk), startInput())
+      .catch((error) => { createRejected = /任务记录写入失败/.test(String(error && error.message)) })
+    check('编排：落盘失败 → 明确报错且不产生任何会话写入/提交（不得假装已创建）',
+      createRejected && order.length === 1 && order[0] === 'tasks.create:rejected' && drafts.length === 0)
+  } finally {
+    globalThis.fetch = originalFetch
+    sandboxGlobal.fetch = originalSandboxFetch
+  }
+  check('编排：断言后 fetch 已复原（两处引用都与断言前一致）',
+    globalThis.fetch === originalFetch && sandboxGlobal.fetch === originalSandboxFetch)
 }
 
 /** 伪 File：client 只用到 name 与流式 body，测试里给最小替身。 */

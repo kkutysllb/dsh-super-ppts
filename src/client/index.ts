@@ -22,9 +22,16 @@
  *    CSS 用 Lucide presentation（幕布）字形替换齿轮；disposer 清标记，
  *    HMR/停用无残留。
  *
- * 6. 0.1.16 草稿桥：工作区选择（uiWorkspace.openWorkspace 复用/新建会话）
+ * 6. 0.1.16 草稿桥 v2：工作区选择（uiWorkspace.openWorkspace 复用/新建会话）
  *    + 会话输入框程序化填充（sessions.scope(id).conversation.input
- *    .for(actx).setDraft）；剪贴板为降级路径（copyToClipboardBridge）。
+ *    .for(actx).setDraft）；剪贴板为降级路径（clipboardFallback /
+ *    apply 内的 copyToClipboardBridge）。
+ *
+ * 6b. **会话桥 v3（Task 6 已交付，模块级 `sendToChatV3(ctx, text, workspaceId)`）**：
+ *    会话定位逻辑同 v2，差别是填完草稿后**自动 `submit()`**——用户点「开始制作」
+ *    任务立即启动，无需回聊天窗口回车。宿主输入面没有 `submit` 或任一步抛错时
+ *    **不得假装提交成功**：一律降级剪贴板桥并返回 'copied'/'none'。
+ *    返回 'submitted' | 'copied' | 'none'。
  *
  * 7. 任务面板壳（0.1.5 sidebar.panellist + main keyed）：主面板是
  *    makePanelsView 产出的**单列**任务工作区——顶部两个轻量视图切换
@@ -33,11 +40,13 @@
  *    makeTemplatePicker），视图根**自持**容器类名
  *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动归宿主：
  *    **不自建**侧边栏 / 右侧固定栏 / 全屏容器 / 100vw / 100vh。
- *    文件内分层：SP_* 常量 → api/uploadMaterial/sendToChatV3 →
- *    makePanelsView（壳）→ 各视图工厂；测试钩子见 bundle 末尾
- *    `exports.__testHooks`（MakePanelsView / viewForStatus /
- *    statusGroupOf / SP_VIEW_NEW / makeNewTaskView / makeRecentView /
- *    makeTemplatePicker / buildBriefFrom / createTask）。
+ *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV3
+ *    → createTask/createTaskAndStart/buildTaskPrompt → makePanelsView（壳）→
+ *    各视图工厂；测试钩子见 bundle 末尾 `exports.__testHooks`
+ *    （MakePanelsView / viewForStatus / statusGroupOf / SP_VIEW_NEW /
+ *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
+ *    createTask / createTaskAndStart / buildTaskPrompt / sendToChatV3 /
+ *    clipboardFallback / uploadMaterial）。
  *
  * 8. 新建任务视图（Task 3 已交付）：主题 textarea（sp-topic-input，rows 3）+
  *    快速开始 8 chip（sp-quick-row / sp-quick-chip，点一条填入 qNText）+
@@ -51,9 +60,11 @@
  *    模板入口 sp-tpl-open 已是**真实选择器**入口（Task 4，打开/关闭由视图层
  *    状态控制，折叠态不渲染选择器）；素材已接上传通道（Task 5：
  *    `uploadMaterial(taskId, file)` → POST /super-ppts/tasks/upload，视图把原始
- *    File 留在本地待上传队列，真正的上传编排由 Task 6 的 createTaskAndStart 做）；
- *    「开始制作」走 apply 注入的最小桥 createTask（只落盘，phase 恒为
- *    'waiting-launch'，Task 6 换成完整 createTaskAndStart）。
+ *    File 留在本地待上传队列，真正的上传编排由 createTaskAndStart 做）；
+ *    「开始制作」走 apply 注入的桥 `bridges.createTask(input)`——Task 6 起注入的是
+ *    绑定 ctx 的完整编排 createTaskAndStart（落盘 → 素材上传 → 会话桥 v3 提交 →
+ *    状态推进），phase 可为 'started'（任务已自动启动）/ 'waiting-launch'（已落盘，
+ *    启动链路降级剪贴板待重试）。
  *
  * 9. 模板选择器（Task 4 已交付）：makeTemplatePicker(t, options) 返回组件工厂，
  *    options = { builtin, user, onPick, onClose }——内置来自 host 的
@@ -182,16 +193,15 @@ export function statusGroupOf(status?: string): 'attention' | 'active' | 'failed
   return 'other'
 }
 
-/** 面板壳 bridges：api + Task 3 的最小桥 createTask；其余由后续任务实现后注入。 */
+/** 面板壳 bridges：api + 任务启动编排 createTask（+ 素材上传 uploadMaterial）。 */
 export interface PptsPanelBridges {
   /** 任务数据面（既有 api）：POST /super-ppts/api/<method>（tasks.list / tasks.get / …）。 */
   api(method: string, body?: unknown): Promise<unknown>
   /**
-   * Task 3 的最小桥（真实形态 = lib/client.js 的 `function createTask(input)`）：
-   * 只做任务落盘 `api('tasks.create', { title, brief, workspace })`，返回
-   * `{ task, phase: 'waiting-launch' }`。Task 6 会把它替换成完整的
-   * createTaskAndStart（素材上传 → 会话桥 v3 提交 → 状态推进，phase
-   * 可为 'started'），**视图层的调用形状与返回语义不变**。
+   * 「开始制作」的桥（真实形态 = apply 里绑定 ctx 的
+   * `function (input) { return createTaskAndStart(ctx, input) }`）。
+   * Task 6 起 phase 可能是 'started'（已自动提交启动）或 'waiting-launch'
+   * （已落盘、启动链路降级剪贴板，可重试）；视图层的调用形状与返回语义不变。
    */
   createTask(input: {
     title: string
@@ -201,8 +211,8 @@ export interface PptsPanelBridges {
   }): Promise<{ task: unknown; phase: 'started' | 'waiting-launch'; message?: string }>
   /** Task 5 已交付：素材原始流式上传（POST /super-ppts/tasks/upload?taskId=&name=）。 */
   uploadMaterial?(taskId: string, file: { name?: string; size?: number }): Promise<{ name: string; size: number; path: string }>
-  /** Task 6 实现：会话桥 v3（定位会话 → setDraft → submit，任务自动启动）。 */
-  sendToChatV3?: unknown
+  /** Task 6 已交付：会话桥 v3（模块级 `sendToChatV3(ctx, text, workspaceId)`）。 */
+  sendToChatV3?(ctx: PptsClientContext, text: string, workspaceId?: string): Promise<SendToChatV3Result>
 }
 
 /**
@@ -260,12 +270,11 @@ export function buildBriefFrom(state: PptsBriefState): Record<string, unknown> {
 }
 
 /**
- * 任务创建最小桥（Task 3；真实形态见 lib/client.js 的 `function createTask(input)`）。
+ * 任务落盘（Task 3 引入的桥；Task 6 起成为 createTaskAndStart 的**第 1 步**，
+ * 真实形态见 lib/client.js 的 `function createTask(input)`）。
  * 只做落盘：`api('tasks.create', { title, brief, workspace })` → 返回
- * `{ task, phase: 'waiting-launch', message: '' }`（如实反映「已落盘但尚未启动」）。
- * **Task 6 用完整的 createTaskAndStart 替换它**（apply 里换注入对象即可，
- * 视图层接口不变）：素材上传 → 会话桥 v3 提交 → 状态推进到 analyzing，
- * phase 置为 'started'。
+ * `{ task, phase: 'waiting-launch', message: '' }`（如实反映「已落盘但尚未启动」，
+ * 不假装已创建/已启动）。落盘失败即 reject——**先落盘再启动**的顺序不可颠倒。
  */
 export function createTask(input: {
   title: string
@@ -274,6 +283,75 @@ export function createTask(input: {
   materials?: unknown[]
 }): Promise<{ task: unknown; phase: 'started' | 'waiting-launch'; message?: string }> {
   return Promise.resolve({ task: null, phase: 'waiting-launch', message: '' })
+}
+
+/** 视图本地素材条目（Task 5）：真实字节在 file，上传通道在 upload。 */
+export interface PptsMaterialEntry {
+  name: string
+  size?: number
+  status?: 'pending' | 'ready' | 'failed'
+  file?: unknown
+  upload?(taskId: string, file: unknown): Promise<{ name: string; size: number; path: string }>
+}
+
+/**
+ * 创建并启动一个演示任务（Task 6 已交付；真实形态见 lib/client.js 的
+ * `function createTaskAndStart(ctx, input)`）——apply 里按 ctx 绑定成
+ * `bridges.createTask(input)` 注入面板壳，**视图层调用形状与返回语义不变**：
+ * 1) 先在 host 落盘（`api('tasks.create', …)`）——失败即中止，绝不产生
+ *    「启动了但没有记录」的孤儿任务；
+ * 2) 逐个上传素材（`uploadMaterial(taskId, entry.file)`，单素材失败只记错误、
+ *    不阻塞启动）；
+ * 3) `buildTaskPrompt(task)` 组装 Brief（内嵌「任务 ID：<id>」，上传回执的
+ *    path 补进 materials，Agent 据此调 ppts_task 并先读素材）；
+ * 4) `sendToChatV3` 写入并提交（自动启动）；
+ * 5) 提交成功 → 任务置 analyzing、phase 'started'；提交失败（降级剪贴板）→
+ *    任务置 waiting-launch（可恢复，**不是 failed**）、phase 'waiting-launch'。
+ * 本函数体只是**类型参考占位**，真实形态见 lib/client.js 同名符号。
+ */
+export function createTaskAndStart(
+  ctx: PptsClientContext,
+  input: {
+    title: string
+    brief: Record<string, unknown>
+    workspace: { id: string; name: string; path: string }
+    materials?: PptsMaterialEntry[]
+  },
+): Promise<{ task: unknown; phase: 'started' | 'waiting-launch'; message?: string }> {
+  return Promise.resolve({ task: null, phase: 'waiting-launch', message: '' })
+}
+
+/**
+ * 组装投递给 Agent 的 Brief 文本（Task 6 已交付；真实形态见 lib/client.js 的
+ * `function buildTaskPrompt(task)`）：首行请示制作 + 「任务 ID：<id>」（Agent 据此
+ * 调用 ppts_task 上报阶段/大纲）；随后按 brief 逐项补主题/受众/场景/页数/
+ * 交付形态/模板三态（null = 不使用模板 → 自由设计；templateId 有值 → 名称+来源）/
+ * 风格要求/素材路径清单；末段要求先报「分析内容」→ 提交 outline → **停下等用户在
+ * 工作台确认**，不要先生成 PPTX/HTML。
+ */
+export function buildTaskPrompt(task: {
+  id?: string
+  brief?: Record<string, unknown>
+  materials?: Array<{ path?: string }>
+}): string {
+  const brief = task?.brief ?? {}
+  const lines = ['请制作一份演示文稿。', '任务 ID：' + task?.id]
+  if (brief.topic) lines.push('主题：' + String(brief.topic))
+  if (brief.audience) lines.push('目标受众：' + String(brief.audience))
+  if (brief.scenario) lines.push('使用场景：' + String(brief.scenario))
+  if (brief.pageCount) lines.push('预计页数：' + String(brief.pageCount))
+  lines.push('交付形态：' + (brief.format === 'html' ? 'HTML 在线演示' : '可编辑 PPTX'))
+  if (brief.templateId === null) lines.push('模板：不使用模板，按内容自由设计')
+  else if (brief.templateId) lines.push('模板：' + String(brief.templateName) + '（' + String(brief.templateSource) + '）')
+  if (brief.styleNotes) lines.push('风格要求：' + String(brief.styleNotes))
+  const materials = task?.materials ?? []
+  if (materials.length > 0) {
+    lines.push('素材文件（请先读取）：')
+    for (const material of materials) lines.push('- ' + String(material.path))
+  }
+  lines.push('')
+  lines.push('请先用 ppts_task 汇报「分析内容」阶段，完成内容分析与页面规划后，用 ppts_task 的 outline 动作提交页面大纲，然后**停下等待用户在工作台确认**，不要先生成 PPTX/HTML。')
+  return lines.join('\n')
 }
 
 /** 最近任务视图工厂（Task 7 实现；真实形态见 lib/client.js 的 makeRecentView）。 */
@@ -329,11 +407,9 @@ export function makeTemplatePicker(
 }
 
 /* 后续任务符号（此处仅 JSDoc 引用，实现由各自任务追加到 lib/client.js）：
- * - sendToChatV3(task, sessionId)：Task 6，定位会话 → conversation.input
- *   .for(actx).setDraft(text) → submit()（任务自动启动，无需回聊天窗口回车）；
- * - createTaskAndStart(input)：Task 6，替换上面的最小桥 createTask。
  * - api(method, body)：既有实现，复用为任务数据面客户端（tasks.* / templates.list）。
- */
+ * Task 6 的 sendToChatV3 / createTaskAndStart / buildTaskPrompt 已在上文给出
+ * 类型同构形态（见各符号 JSDoc）。 */
 
 /**
  * 素材上传（Task 5 已交付；真实形态见 lib/client.js 的
@@ -433,6 +509,106 @@ export async function sendToChat(ctx: PptsClientContext, text: string, workspace
   }
 }
 
+/** v3 会话桥结果：'submitted' = 已写入并自动提交；'copied' = 降级剪贴板；'none' = 全失败。 */
+export type SendToChatV3Result = 'submitted' | 'copied' | 'none'
+
+/**
+ * 会话桥 v3（Task 6 已交付；真实形态见 lib/client.js 的
+ * `function sendToChatV3(ctx, text, workspaceId)`——与 v2 不同，它是**模块级**
+ * 函数，ctx 显式传入，供 createTaskAndStart 与冒烟 __testHooks 直接调用）。
+ *
+ * 与 v2 的唯一差别是最后一步：填完草稿后调用同一 shell 的 `submit()`，
+ * 用户点「开始制作」任务**立即启动**，无需回聊天窗口按回车。
+ *
+ * 1) 会话落点（沿用 v2）：同工作区 → 当前会话；跨工作区/无会话 →
+ *    uiWorkspace.openWorkspace(ws) 后取当前会话；工作区列表空 →
+ *    sessions.create() + open；定位失败 → 降级。
+ * 2) 写草稿：sessions.scope(id).conversation.input.for(actx).setDraft(text)。
+ * 3) 提交：同一 shell 上 `submit()`（顺序不可颠倒：setDraft 先于 submit）。
+ *    **若 submit 不存在或任一步抛错，不得假装提交成功**——一律降级剪贴板桥，
+ *    绝不返回 'submitted'（否则 createTaskAndStart 会把没启动的任务置成
+ *    analyzing，用户以为在做其实没动）。
+ * 4) 剪贴板降级=模块级 clipboardFallback(ctx, text)：'copied' | 'none'。
+ */
+export async function sendToChatV3(
+  ctx: PptsClientContext,
+  text: string,
+  workspaceId?: string,
+): Promise<SendToChatV3Result> {
+  type Shell = { setDraft?(t: string): void; submit?(mode?: unknown): void }
+  type SessionsFace = {
+    list?: { getSnapshot?(): { current?: string } }
+    create?(opts?: { cwd?: string }): Promise<string>
+    open?(id: string): void
+    scope?(id: string): (Record<string, unknown> & { conversation?: { input?: { for?(c: unknown): Shell } } }) | undefined
+  }
+  const sessions = (ctx as unknown as { sessions?: SessionsFace }).sessions
+  const workspaces = ctx.workspaces
+  const uiWorkspace = ctx.uiWorkspace
+  const backToChat = (): void => {
+    try { (ctx as unknown as { layout?: { selectPanel?(id: unknown): void } }).layout?.selectPanel?.(null) } catch { /* 服务不可达:留在当前面板 */ }
+  }
+  const fallback = async (): Promise<SendToChatV3Result> => {
+    let copied = false
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        copied = await navigator.clipboard.writeText(text).then(() => true).catch(() => false)
+      }
+    } catch { /* 剪贴板不可用 */ }
+    if (!copied) return 'none'
+    try {
+      const current = sessions?.list?.getSnapshot?.().current
+      if (!current && typeof sessions?.create === 'function') {
+        await sessions.create().then(async (id) => { try { sessions?.open?.(id) } catch { /* 已选中 */ } }).catch(() => { /* 无落点 */ })
+      }
+    } catch { /* 服务不可达 */ }
+    backToChat()
+    return 'copied'
+  }
+  try {
+    if (!sessions?.list?.getSnapshot) return fallback()
+    const current = sessions.list.getSnapshot().current
+    const wsList = workspaces?.list?.getSnapshot?.() ?? null
+    let wsOfCurrent: string | null = null
+    if (current && wsList) {
+      for (const item of wsList.items) {
+        if (item.sessionIds.includes(current)) { wsOfCurrent = item.workspaceId; break }
+      }
+    }
+    const wantsSwitch = workspaceId !== undefined && workspaceId !== '' && wsOfCurrent !== workspaceId
+    let sessionId: string | null | undefined = current
+    if (!current || wantsSwitch) {
+      if (uiWorkspace?.openWorkspace && wsList && wsList.items.length > 0) {
+        const target = workspaceId || wsOfCurrent || wsList.items[0].workspaceId
+        await uiWorkspace.openWorkspace(target)
+        sessionId = sessions.list.getSnapshot().current ?? null
+      } else if (typeof sessions.create === 'function') {
+        sessionId = await sessions.create()
+        try { sessions?.open?.(sessionId) } catch { /* 已选中 */ }
+        backToChat()
+      } else {
+        sessionId = null
+      }
+    }
+    if (sessionId === null || sessionId === undefined) return fallback()
+    backToChat()
+    const actx = sessions.scope?.(sessionId)
+    const shell = actx?.conversation?.input?.for?.(actx)
+    if (shell && typeof shell.setDraft === 'function') {
+      shell.setDraft(text)
+      // v3 的关键一步：Write 之后必须 Submit（否则退化成 v2，用户还得回车）。
+      if (typeof shell.submit === 'function') {
+        shell.submit()
+        return 'submitted'
+      }
+      // 宿主输入面没有 submit（≤旧宿主）→ 不假装提交成功，降级剪贴板。
+    }
+    return fallback()
+  } catch {
+    return fallback()
+  }
+}
+
 /** 挂载设置页「演示文稿」区块 + 左侧栏工作台主面板。 */
 export function apply(ctx: PptsClientContext): void {
   ctx.effect(() => ctx.locale.register('superPpts', { zh: {}, en: {} }), 'dsh-super-ppts: section dictionaries')
@@ -455,9 +631,11 @@ export function apply(ctx: PptsClientContext): void {
     )
     const disposePanel = ctx.slots.register(
       { name: 'main', key: 'super-ppts-panel' },
-      // 任务面板壳（makePanelsView(t, { api, createTask })——sendToChatV3 /
-      // uploadMaterial 由后续任务实现后注入；createTask 是 Task 3 的最小桥，
-      // Task 6 换成完整 createTaskAndStart，真实形态见 lib/client.js）：
+      // 任务面板壳（makePanelsView(t, { api, createTask, uploadMaterial })）：
+      // createTask 注入的是**绑定本 ctx 的完整编排**——
+      // `function (input) { return createTaskAndStart(ctx, input) }`
+      // （Task 6：落盘 → 素材上传 → 会话桥 v3 提交 → 状态推进；单参调用形状与
+      // { task, phase } 返回语义不变，真实形态见 lib/client.js）：
       // root 面板接收全局标准 props useWorkspaces（工作区选择行，
       // 选择器用法 useWorkspaces(s => s.items)；旧宿主缺失时行隐藏）。
       function Workbench() { return null },
