@@ -177,6 +177,60 @@ git commit -m "feat(host): builtin template metadata module"
 - Modify: `tsconfig.json`（登记 `src/tasks.ts`——同 Task 1 的白名单要求）
 - Test: `scripts/smoke-plugin.mjs`
 
+> **⚠️ 实现后审查修订（2026-09-16，权威，优先于下方代码块）**
+>
+> 本任务首次实现（提交 `260014c`）通过规格合规审查，但代码质量审查判定 `NEEDS_FIX`。
+> 以下修订项**优先于**下方代码块与断言；下方代码块为历史原文，保留供追溯。
+>
+> **A. 索引改为无损缓存（设计变更，已同步修订规格文档）**
+> 取消 `MAX_INDEX_TASKS` 裁剪。原设计按 `updatedAt` 裁到 50 条，会让磁盘上存在但被挤出索引
+> 的任务**永久不可见**，且恰好挤出「等待用户确认最久」的任务，与恢复优先级自相矛盾。
+> 新约定：索引只是缓存，磁盘任务目录才是真源。`loadIndex()` 在以下任一情况从 `TASKS_ROOT`
+> 扫描各任务目录并重建索引：索引文件缺失、损坏、或索引条目数少于磁盘任务目录数。
+> `saveTask()` 不再裁剪，`listTasks()` 全量返回。相应地，冒烟里
+> 「索引按上限裁剪（= MAX_INDEX_TASKS）」必须改为断言**无损性**：创建 N 个任务后索引条目数
+> === 磁盘任务目录数，且被挤出过的任务仍能通过 `listTasks()` 看到。
+>
+> **B. 读取侧形态校验（防裸 TypeError 逃出错误契约）**
+> `loadTask()` 现在只查 `id` 是字符串，写入 `{"id":"k..."}` 这种残缺 JSON 后 `indexEntryOf()`
+> 会抛裸 `TypeError`（`code=undefined`）。改为：`workspace.id` / `brief.format` / `status` /
+> `title` 均须为字符串，否则 quarantine 并返回 null；`indexEntryOf()` 改用 `task.brief?.format` 兜底。
+> `loadIndex()` 的 `item is TaskIndexEntry` 谓词必须校验全部 7 个字段（`format` 限 `pptx`/`html`），
+> 不合格条目丢弃——当前只查 3 个字段，消费方读 `format`/`workspaceName` 会拿到 `undefined`，排序静默失序。
+>
+> **C. 并发与失败回滚**
+> - `writeMaterial()`：流式写有长窗口，现在在流结束后用**陈旧记录**整份回写，会静默吃掉流中途发生的
+>   `updateTask`/`appendEvent` 等更新。改为保存前重新 `requireTask(taskId)`，在**新记录**上合并素材与事件。
+> - `writeMaterial()`：`saveTask` 抛错时素材文件已落盘但未登记，留孤儿。改为 try/catch →
+>   `rmSync(target, { force: true })` → rethrow（对照 `templates.ts` 的 `addTemplate` 回滚纪律）。
+>
+> **D. 路径与值域校验（拼路径/写盘前必经）**
+> - `outlineFile(id, version)`：`version` 未校验即拼进文件名（非整数或字符串可越出 `TASKS_ROOT`）。
+>   改为 `Number.isInteger(version) && version > 0`，否则抛 `bad-request`；`loadTask` 用 `Number.isInteger`。
+> - 写入口值域：导出 `TASK_STATUSES` / `TASK_FORMATS` 只读数组，`createTask` / `updateTask` 校验
+>   `status` 与 `brief.format`（对照 `templates.ts` 的 `FORMATS.includes()` 白名单拒绝）。
+> - 长度上限：导出 `TITLE_MAX` / `TOPIC_MAX` 并在 create/update 校验（索引每次列表都读，超长标题会撑大它）。
+> - `deleteTask()`：索引与目录都不存在时抛 `not-found`，不要静默成功（下游无法区分 404 与成功）。
+>
+> **E. brief 合并语义（保「不使用模板」与「跟随默认模板」的区分）**
+> `updateTask` 现在用 `{ ...task.brief, ...patch.brief }`，显式传入 `undefined` 会写入该键，
+> 落盘后 `JSON.stringify` 丢键 = 静默变成「跟随默认」，破坏规格要求的
+> `templateId: null`（不使用模板）与 `undefined`（跟随默认）语义。改为只合并值 `!== undefined` 的键。
+>
+> **F. 大纲页 id 稳定性**
+> `saveOutline()` 内对 `pages[].id` 查重，冲突即抛 `bad-request`（同版本内两个 `p1` 会让后续
+> 「按 id 编辑某页」无法消歧）。并在注释写明契约：生成新版本时调用方**须回传既有 id**。
+>
+> **G. 补强两条弱断言（规格审查用变异测试发现的）**
+> - 「列表按恢复优先级排序」当前可被「时间新」蒙过（把优先级表整体旁路仍全绿）。改为构造可区分场景：
+>   让一个 `updatedAt` 更旧的 `waiting-outline` 任务与一个更新的 `creating` 任务并存，断言前者排在前。
+> - `index.json` 损坏留底分支零覆盖：补一条断言（写坏 `index.json` → `loadIndex()` 不抛错、留底
+>   `*.corrupt-*`、并能从磁盘任务目录重建出条目）。
+>
+> **H. 可选小修（随手做，不单独返工）**
+> `pushEvent` 内两处 `new Date().toISOString()` 合成一个 `now`；`updateTask` 变更 `status` 时也
+> `pushEvent`（当前 `setStatus` 记事件、`updateTask` 不记，时间线漏状态迁移）。
+
 - [ ] **Step 1: 写失败测试**
 
 在 `scripts/smoke-plugin.mjs` 的 `disposeRoutes()` 之前（Task 1 插入块之后）插入：
