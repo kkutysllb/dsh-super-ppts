@@ -1,3 +1,9 @@
+/**
+ * DSH home 解析（零依赖复刻宿主 dsh-home-paths 的取值优先级）：
+ * `$DSH_HOME`（非空白）→ `~/.dsh`。KCoder 桌面端把 DSH_HOME 指到
+ * ~/.kcoder，CLI 默认 ~/.dsh——插件数据必须跟随宿主 home，不能写死。
+ */
+export declare const DSH_HOME: string;
 /** 存储根（模板目录与清单的父目录）。 */
 export declare const STORE_ROOT: string;
 /** 模板二进制目录。 */
@@ -56,6 +62,7 @@ export declare function validateDescription(raw: unknown): string;
  * 读清单。缺文件回落默认（首次运行的正常形态）；存在但坏 JSON / 形态不对时
  * 先留底再回落默认——此后 saveRegistry 落的是干净新清单，既有模板记录保存在
  * *.corrupt-* 里可人工恢复，不会被空数据静默覆盖（存储层绝不阻断插件加载）。
+ * 读取前先尝试旧存储根迁移；成功解析后对 file 字段做按 id 自愈。
  */
 export declare function loadRegistry(): Registry;
 /** 原子写清单：tmp + rename（进程崩溃也不会留下半截 JSON）。 */
