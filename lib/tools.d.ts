@@ -79,7 +79,7 @@ export declare function runTemplates(params?: PptsTemplatesParams): {
 };
 export declare const pptsTemplatesTool: DshToolDefinition;
 export interface PptsTaskParams {
-    action: 'stage' | 'outline' | 'artifact' | 'material' | 'needs-input' | 'fail' | 'get';
+    action: 'stage' | 'outline' | 'artifact' | 'material' | 'needs-input' | 'fail' | 'done' | 'get';
     /** 任务 id（由工作台创建任务时写入 Brief 的「任务 ID」）。 */
     taskId: string;
     /** action=stage：阶段键（analyzing / planning / building / reviewing）。 */

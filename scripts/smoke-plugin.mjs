@@ -1019,6 +1019,20 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     failed.ok === true && store.loadTask(task.id)?.status === 'failed'
       && /渲染失败/.test(store.loadTask(task.id)?.events.at(-1)?.text ?? ''))
 
+  // 实现后审查修正（major）：completed 全链路可达——done 动作收口生命周期
+  // （buildContinuePrompt 要求 Agent「推进到 completed」，此前无任何动作可达）
+  const done = runTask({ action: 'done', taskId: task.id })
+  check('ppts_task done 标记 completed 并留状态事件（产物登记后收口）',
+    done.ok === true && done.status === 'completed' && done.taskId === task.id
+    && store.loadTask(task.id)?.status === 'completed'
+    && /completed/.test(String(store.loadTask(task.id)?.events.at(-1)?.text ?? '')))
+  check('ppts_task done 未知任务 → ok:false', runTask({ action: 'done', taskId: 'nope-done-0' }).ok === false)
+  check('ppts_task 参数 schema action enum 含 done',
+    Array.isArray(pptsTaskTool.parameters.properties.action.enum)
+    && pptsTaskTool.parameters.properties.action.enum.includes('done'))
+  check('ppts_task description 教学 done（产物登记后标记完成）',
+    pptsTaskTool.description.includes('done'))
+
   check('ppts_task 未知任务 → ok:false', runTask({ action: 'get', taskId: 'nope-000000' }).ok === false)
 
   // 输出值合规（运行时校验器可用时）

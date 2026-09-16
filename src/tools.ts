@@ -325,10 +325,12 @@ export const pptsTemplatesTool: DshToolDefinition = {
  * 面板创建任务后把 taskId 写进 Brief，Agent 必须经本工具上报阶段与大纲；
  * 提交大纲后任务转 waiting-outline 并「停下等确认」——这是防止高成本生成
  * 在结构未确认前启动的闸门。用户确认后，面板以同一会话提交继续指令，
- * Agent 用 action=get 读到 confirmedOutlineVersion 后继续生成。 */
+ * Agent 用 action=get 读到 confirmedOutlineVersion 后继续生成；产物用
+ * action=artifact 登记、生命周期用 action=done 收口（completed 是唯一
+ * 经 done 动作到达的终态——结果视图与轮询停止都依赖它）。 */
 
 export interface PptsTaskParams {
-  action: 'stage' | 'outline' | 'artifact' | 'material' | 'needs-input' | 'fail' | 'get'
+  action: 'stage' | 'outline' | 'artifact' | 'material' | 'needs-input' | 'fail' | 'done' | 'get'
   /** 任务 id（由工作台创建任务时写入 Brief 的「任务 ID」）。 */
   taskId: string
   /** action=stage：阶段键（analyzing / planning / building / reviewing）。 */
@@ -365,7 +367,8 @@ export interface PptsTaskResult {
   materialStatus?: 'ready' | 'error'
 }
 
-/** 阶段键 → 任务状态（面板据此渲染阶段时间线）。 */
+/** 阶段键 → 任务状态（面板据此渲染阶段时间线）。completed 刻意不在表内——
+ *  它不是「进行中的阶段」，只能由 action=done 显式到达。 */
 const STAGE_STATUS: Record<string, TaskStatus> = {
   analyzing: 'analyzing',
   planning: 'analyzing',
@@ -466,6 +469,18 @@ export function runTask(params: PptsTaskParams): PptsTaskResult {
         const failed = appendEvent(taskId, 'fail', reason)
         return { ok: true, message: `已记录失败：${reason}（可重试当前阶段）`, taskId, status: failed.status }
       }
+      case 'done': {
+        // done=任务完成标记：completed 的唯一入口（STAGE_STATUS 刻意不含
+        // completed——阶段上报只表达进行中；收口必须由 Agent 显式发起）
+        const saved = setStatus(taskId, 'completed')
+        return {
+          ok: true,
+          message: '任务已标记完成（产物请确认已用 artifact 动作登记）',
+          taskId,
+          status: saved.status,
+          outlineVersion: saved.outlineVersion,
+        }
+      }
       case 'get': {
         return {
           ok: true,
@@ -484,7 +499,7 @@ export function runTask(params: PptsTaskParams): PptsTaskResult {
         // （例如把 outline 写成 outlines），而这恰恰是最需要立刻失败、而不是看起来成功的时刻。
         return {
           ok: false,
-          message: `未知 action：${String(params.action)}（支持 stage/outline/artifact/material/needs-input/fail/get）`,
+          message: `未知 action：${String(params.action)}（支持 stage/outline/artifact/material/needs-input/fail/done/get）`,
         }
     }
   } catch (error) {
@@ -503,14 +518,15 @@ export const pptsTaskTool: DshToolDefinition = {
     'action=get 读取当前状态与 confirmedOutlineVersion（收到「大纲已确认」消息后可先用它核对）；' +
     'action=artifact 登记产物路径；action=needs-input 请求用户补充信息；action=fail 记录失败原因与可恢复动作；' +
     'action=material 回报素材读取结果（materialId + materialStatus）——读成功报 ready，' +
-    '读失败报 error 并用 detail 附原因，用户即可在工作台重试或删除该素材。',
+    '读失败报 error 并用 detail 附原因，用户即可在工作台重试或删除该素材；' +
+    'action=done 标记任务完成（completed）——所有产物登记完毕后必须调用一次，它是结果视图与轮询停止的唯一入口。',
   parameters: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['stage', 'outline', 'artifact', 'material', 'needs-input', 'fail', 'get'],
-        description: 'stage=上报阶段；outline=提交大纲并停下等确认；artifact=登记产物；material=回报素材读取结果；needs-input=请求补充；fail=记录失败；get=读取状态',
+        enum: ['stage', 'outline', 'artifact', 'material', 'needs-input', 'fail', 'done', 'get'],
+        description: 'stage=上报阶段；outline=提交大纲并停下等确认；artifact=登记产物；material=回报素材读取结果；needs-input=请求补充；fail=记录失败；done=标记任务完成（产物登记后收口，状态转 completed）；get=读取状态',
       },
       taskId: { type: 'string', description: '任务 id（Brief 中的「任务 ID」）' },
       stageKey: { type: 'string', description: 'action=stage：阶段键（analyzing / planning / building / reviewing）' },
