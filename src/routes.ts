@@ -16,6 +16,7 @@
  * 流式落盘、限额即断，失败不留半截文件（见 templates.writeUploadTemp）。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { BUILTIN_TEMPLATES } from './builtin-templates.js'
 import {
   TemplateStoreError,
   addTemplate,
@@ -26,6 +27,23 @@ import {
   updatePrefs,
   writeUploadTemp,
 } from './templates.js'
+import {
+  TaskStoreError,
+  confirmOutline,
+  createTask,
+  deleteTask,
+  listTasks,
+  loadTask,
+  saveOutline,
+  updateTask,
+  writeMaterial,
+  type ListTasksFilter,
+  type OutlinePage,
+  type TaskBrief,
+  type TaskStatus,
+  type TaskWorkspace,
+  type UpdateTaskPatch,
+} from './tasks.js'
 
 /** node http 请求头值形态（string | string[] | undefined 的窄子集）。 */
 type HeaderValue = string | string[] | undefined
@@ -120,6 +138,11 @@ function writeError(res: ServerResponse, error: unknown): void {
     writeJson(res, status, { ok: false, error: { code: error.code, message: error.message } })
     return
   }
+  if (error instanceof TaskStoreError) {
+    const status = error.code === 'not-found' ? 404 : error.code === 'fs-error' ? 500 : 400
+    writeJson(res, status, { ok: false, error: { code: error.code, message: error.message } })
+    return
+  }
   // 未知异常不回传 message（可能含绝对路径等内部细节）：详情只进 host 日志
   console.error('[dsh-super-ppts] internal error:', error)
   writeJson(res, 500, { ok: false, error: { code: 'internal', message: 'internal error' } })
@@ -143,10 +166,12 @@ function optionalString(payload: unknown, key: string): string | undefined {
   return value
 }
 
-/** JSON 操作面：method → handler（templates.* / prefs.*）。 */
+/** JSON 操作面：method → handler（templates.* / prefs.* / tasks.*）。 */
 export function buildPptsApiHandlers(): Record<string, (payload: unknown) => unknown> {
   return {
-    'templates.list': () => loadRegistry(),
+    // templates.list 附带内置模板元数据：用户模板字段口径不变（向后兼容），
+    // builtinTemplates 为新增字段，面板据此分组展示两类来源。
+    'templates.list': () => ({ ...loadRegistry(), builtinTemplates: BUILTIN_TEMPLATES }),
     'templates.rename': (payload) => {
       const id = requireString(payload, 'id')
       const name = requireString(payload, 'name')
@@ -167,6 +192,58 @@ export function buildPptsApiHandlers(): Record<string, (payload: unknown) => unk
     'prefs.update': (payload) => {
       const record = payload as Record<string, unknown> | null
       return updatePrefs(record?.patch)
+    },
+    'tasks.list': (payload) => {
+      const record = payload as Record<string, unknown> | null
+      const filter: ListTasksFilter = {}
+      const status = record?.status
+      if (typeof status === 'string' && status !== '') filter.status = status as TaskStatus
+      const workspaceId = record?.workspaceId
+      if (typeof workspaceId === 'string' && workspaceId !== '') filter.workspaceId = workspaceId
+      return { tasks: listTasks(filter) }
+    },
+    'tasks.get': (payload) => {
+      const id = requireString(payload, 'id')
+      const task = loadTask(id)
+      if (task === null) throw new PptsRouteError('not-found', `任务不存在：${id}`, 404)
+      return task
+    },
+    'tasks.create': (payload) => {
+      const record = payload as Record<string, unknown> | null
+      const brief = record?.brief
+      if (brief === null || typeof brief !== 'object') {
+        throw new PptsRouteError('bad-request', 'missing or invalid "brief"')
+      }
+      const workspace = record?.workspace
+      return createTask({
+        title: requireString(payload, 'title'),
+        brief: brief as TaskBrief,
+        workspace: (workspace !== null && typeof workspace === 'object' ? workspace : { id: '', name: '', path: '' }) as TaskWorkspace,
+      })
+    },
+    'tasks.update': (payload) => {
+      const record = payload as Record<string, unknown> | null
+      const patch = record?.patch
+      if (patch === null || typeof patch !== 'object') {
+        throw new PptsRouteError('bad-request', 'missing or invalid "patch"')
+      }
+      return updateTask(requireString(payload, 'id'), patch as UpdateTaskPatch)
+    },
+    'tasks.delete': (payload) => {
+      deleteTask(requireString(payload, 'id'))
+      return { deleted: true }
+    },
+    'tasks.outline': (payload) => {
+      const record = payload as Record<string, unknown> | null
+      const pages = record?.pages
+      if (!Array.isArray(pages)) throw new PptsRouteError('bad-request', 'missing or invalid "pages"')
+      return saveOutline(requireString(payload, 'id'), pages as OutlinePage[])
+    },
+    'tasks.confirmOutline': (payload) => {
+      const record = payload as Record<string, unknown> | null
+      const version = record?.version
+      if (typeof version !== 'number') throw new PptsRouteError('bad-request', 'missing or invalid "version"')
+      return confirmOutline(requireString(payload, 'id'), version)
     },
   }
 }
@@ -235,6 +312,30 @@ export function registerPptsRoutes(ctx: PptsRoutesContext, options: PptsRoutesOp
       }
     },
   }), 'dsh-super-ppts: /super-ppts/upload route'))
+
+  // 素材上传：任务目录内的原始流式落盘（与 /upload 同款信任围栏与限额）。
+  disposers.push(ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/super-ppts/tasks/upload',
+    handler: async (req, res) => {
+      if (!fenceRequest(req, trustedHosts)) {
+        writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+        return
+      }
+      if (req.method !== 'POST') {
+        writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } })
+        return
+      }
+      try {
+        const url = new URL(req.url ?? '/', 'http://dsh.internal')
+        const taskId = url.searchParams.get('taskId') ?? ''
+        const name = url.searchParams.get('name') ?? ''
+        writeOk(res, await writeMaterial(taskId, name, req, options.uploadLimitBytes))
+      } catch (error) {
+        writeError(res, error)
+      }
+    },
+  }), 'dsh-super-ppts: /super-ppts/tasks/upload route'))
 
   return () => {
     for (const dispose of disposers) {

@@ -62,8 +62,9 @@ const ctx = {
 }
 
 const disposeRoutes = registerPptsRoutes(ctx, { uploadLimitBytes: 10 * 1024 * 1024 })
-check('路由已注册（api + upload）', routes.has('/super-ppts/api/*') && routes.has('/super-ppts/upload'))
-check('effect 已登记', effects.length === 2)
+check('路由已注册（api + upload + tasks/upload）',
+  routes.has('/super-ppts/api/*') && routes.has('/super-ppts/upload') && routes.has('/super-ppts/tasks/upload'))
+check('effect 已登记', effects.length === 3)
 
 function mockRes() {
   return new Promise((resolve) => {
@@ -414,6 +415,81 @@ const tasksMod = await import('../lib/tasks.js')
     listed.length === dirsWithJson && allDirs > dirsWithJson && jsonIntact
       && listed.some(item => item.id === healthy.id) && listed.some(item => item.id === laterBroken.id),
     `index=${listed.length} withJson=${dirsWithJson} allDirs=${allDirs} brokenJsonIntact=${jsonIntact}`)
+}
+
+/* ═══ 1.6 任务 API 路由 ═══ */
+{
+  const created = await callApi('tasks.create', {
+    title: '路由任务',
+    brief: { topic: '路由主题', format: 'pptx' },
+    workspace: { id: 'ws-route', name: '路由工作区', path: '/tmp/route' },
+  })
+  check('tasks.create 返回任务记录', created.json.ok === true && typeof created.json.value.id === 'string')
+  const id = created.json.value.id
+
+  check('tasks.get 返回任务详情', (await callApi('tasks.get', { id })).json.value.title === '路由任务')
+
+  const missing = await callApi('tasks.get', { id: 'nope-000000' })
+  check('tasks.get 未知 id → 404 not-found', missing.status === 404 && missing.json.error?.code === 'not-found')
+
+  const listed = await callApi('tasks.list', {})
+  check('tasks.list 返回索引条目', listed.json.ok && listed.json.value.tasks.some(item => item.id === id))
+
+  const badCreate = await callApi('tasks.create', { title: '缺 brief' })
+  check('tasks.create 缺 brief → 400', badCreate.status === 400)
+
+  const outlined = await callApi('tasks.outline', { id, pages: [{ title: 'A' }, { title: 'B' }] })
+  check('tasks.outline 保存并转等待确认', outlined.json.ok && outlined.json.value.status === 'waiting-outline')
+
+  check('tasks.confirmOutline 版本不符 → 400', (await callApi('tasks.confirmOutline', { id, version: 42 })).status === 400)
+
+  const confirmed = await callApi('tasks.confirmOutline', { id, version: 1 })
+  check('tasks.confirmOutline 成功转 building', confirmed.json.ok && confirmed.json.value.status === 'building')
+
+  const renamed = await callApi('tasks.update', { id, patch: { title: '路由任务改名' } })
+  check('tasks.update 改名生效', renamed.json.ok && renamed.json.value.title === '路由任务改名')
+
+  check('tasks.delete 移除任务目录', (await callApi('tasks.delete', { id })).json.ok && !existsSync(tasksMod.taskDir(id)))
+}
+
+/* ═══ 1.7 素材上传路由 ═══ */
+{
+  const created = await callApi('tasks.create', {
+    title: '素材路由',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  const id = created.json.value.id
+
+  async function callMaterialUpload(url, body) {
+    const handler = routes.get('/super-ppts/tasks/upload')
+    const req = {
+      method: 'POST',
+      url,
+      headers: { host: '127.0.0.1:60864' },
+      async *[Symbol.asyncIterator]() { yield body },
+    }
+    let resolveRes
+    const pending = new Promise(resolve => { resolveRes = resolve })
+    const mocked = {
+      writeHead(status) { mocked._status = status },
+      end(payload) { resolveRes({ status: mocked._status, body: payload }) },
+    }
+    await handler(req, mocked)
+    const result = await pending
+    return { status: result.status, json: JSON.parse(result.body) }
+  }
+
+  check('素材上传路由已注册', typeof routes.get('/super-ppts/tasks/upload') === 'function')
+
+  const uploaded = await callMaterialUpload(
+    '/super-ppts/tasks/upload?taskId=' + encodeURIComponent(id) + '&name=' + encodeURIComponent('数据.xlsx'),
+    Buffer.alloc(2048, 5),
+  )
+  check('素材上传成功并登记到任务', uploaded.status === 200 && uploaded.json.ok && uploaded.json.value.name === '数据.xlsx')
+
+  const badTask = await callMaterialUpload('/super-ppts/tasks/upload?taskId=nope-000000&name=x.txt', Buffer.alloc(16, 1))
+  check('未知任务素材上传 → 404', badTask.status === 404)
 }
 
 disposeRoutes()
