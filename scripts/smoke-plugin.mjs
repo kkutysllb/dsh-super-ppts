@@ -918,6 +918,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['buildContinuePrompt', 'buildContinuePrompt'],                   // 大纲确认后的继续生成指令(Task 2)
     ['buildOutlineRevisePrompt', 'buildOutlineRevisePrompt'],         // 自然语言修改大纲指令(Task 2)
     ['makeOutlineReviewView', 'makeOutlineReviewView'],               // 大纲确认视图(Plan 2b Task 3;确认门+未保存态)
+    ['makeProgressView', 'makeProgressView'],                         // 生成进度视图(Plan 2b Task 4;六阶段时间线+恢复变体)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -2099,6 +2100,176 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   }
 }
 
+/* ═══ Plan 2b Task 4：生成进度视图（六阶段时间线 + 状态变体 + 操作接线）═══
+   stub React 不重渲染：变体按 task prop 条件渲染（各断言直接换 task）；
+   answerText 与 Task 3 reviseText 同法经 options 注入初值；点击后出现的行
+   （sp-msg-ok / sp-msg-err）常驻渲染、display 切换。异步点击一律
+   check(name, await (async () => …)())——check 是同步的，裸传 Promise 恒 truthy。 */
+{
+  const H = loadedModule.__testHooks
+  const t = (key) => key
+  const baseTask = (over) => Object.assign({
+    id: 'k1', title: 'Q3 经营复盘', status: 'building',
+    workspace: { id: 'ws1', name: '季度汇报', path: '/ws' },
+    brief: { topic: 'Q3', format: 'pptx' }, outlineVersion: 1,
+    outline: { version: 1, pages: [{ id: 'p1', title: 'a', bullets: [] }, { id: 'p2', title: 'b', bullets: [] }] },
+    stage: { key: 'building', index: 3, total: 6, detail: '正在生成第 4/9 页：区域表现' },
+    materials: [], artifacts: [],
+    events: [
+      { at: '2026-09-16T04:05:00.000Z', kind: 'status', text: '状态 → building' },
+      { at: '2026-09-16T04:03:00.000Z', kind: 'outline', text: '已生成大纲 v1（2 页），等待确认' },
+      { at: '2026-09-16T04:02:00.000Z', kind: 'stage', text: '阶段 → building（3/6）' },
+    ],
+  }, over)
+  // 整理级修正：计划原文先 `const sent = []` 后又整行重复 let 声明
+  // backedToOutline / openedSession（重复声明 SyntaxError）——合并为一行；
+  // sent 恒不整体替换（reset 用 length=0）保持 const，apiCalls 重赋值保持 let。
+  const sent = []; let apiCalls = []; let backedToOutline = false; let updatedWith = null; let openedSession = false; let extra = null
+  const progressOpts = () => Object.assign({
+    task: baseTask(),
+    api: (method, body) => { apiCalls.push({ method, body }); return Promise.resolve(baseTask({ status: body && body.patch && body.patch.status ? body.patch.status : 'building' })) },
+    sendToSession: (text, ws) => { sent.push({ text, ws }); return Promise.resolve('submitted') },
+    onUpdated: (next) => { updatedWith = next },
+    onBackToOutline: () => { backedToOutline = true },
+    openSession: () => { openedSession = true },
+  }, extra || {})
+  const progressTree = () => H.makeProgressView(t, progressOpts())({})
+  // 整理级修正：reset 补 updatedWith = null（计划原文漏清，Task 3 resetCase 同法）。
+  const reset = () => { sent.length = 0; apiCalls = []; backedToOutline = false; openedSession = false; updatedWith = null; extra = null }
+  try {
+    const PS = H.progressSteps
+    // 纯函数：阶段映射（标题的「尾步 active」与判定式 every(pending) 矛盾——
+    // 以判定式为准，计划 Step 3 骨架注释亦写「无汇报：全部 pending」）。
+    check('progressSteps: 无 stage → 全 pending', (() => {
+      const steps = PS(null)
+      return steps.length === 6 && steps.every((s) => s.state === 'pending')
+    })())
+    check('progressSteps: 3/6 → 前两步 done、第三步 active、后三步 pending', (() => {
+      const steps = PS({ index: 3, total: 6, key: 'building' })
+      return steps[0].state === 'done' && steps[1].state === 'done' && steps[2].state === 'active' && steps[5].state === 'pending'
+    })())
+    check('progressSteps: 任意 total 归一映射（total=12, index=4 → 第 2 步 active）', PS({ index: 4, total: 12, key: 'x' })[1].state === 'active')
+    // 语义级强化：4/12*6 恰为整值（2.0），Math.ceil 与 Math.round 不可判别
+    // ——补一条非整比例断言，锁死计划 Step 5 反向验证（ceil→round 必须 FAIL 一条）。
+    check('progressSteps: 非整比例向上取整（total=5, index=2 → 2.4 → 第 3 步 active、第 2 步 done）', (() => {
+      const steps = PS({ index: 2, total: 5, key: 'building' })
+      return steps[1].state === 'done' && steps[2].state === 'active'
+    })())
+    check('lastEventOfKind: 取该 kind 最新一条（fail 原因 / needs-input 问题都用它）', (() => {
+      const task = baseTask({ status: 'failed', events: [
+        { at: '2026-09-16T05:00:00.000Z', kind: 'fail', text: '渲染失败：字体缺失' },
+        { at: '2026-09-16T04:05:00.000Z', kind: 'status', text: '状态 → building' },
+      ] })
+      const earlier = baseTask({ status: 'failed', events: [
+        { at: '2026-09-16T04:00:00.000Z', kind: 'fail', text: '较早的失败' },
+        { at: '2026-09-16T05:00:00.000Z', kind: 'fail', text: '渲染失败：字体缺失' },
+      ] })
+      return H.lastEventOfKind(task, 'fail')?.text === '渲染失败：字体缺失'
+        && H.lastEventOfKind(earlier, 'fail')?.text === '渲染失败：字体缺失'
+        && H.lastEventOfKind(task, 'nope') === null
+    })())
+
+    reset()
+    const tree = progressTree()
+    // 整理级修正：byClass 子串匹配会顺带命中容器 sp-steps——步计数改 token 拆分
+    // （Task 3 同法，语义不变：六步 + 三种状态类名在场）；标题含根类名→补断言。
+    check('进度视图根类名 + 固定六阶段时间线（done/active/pending 类名）', (() => {
+      const steps = collectElements(tree).filter((el) => String(classOf(el)).split(/\s+/).indexOf('sp-step') !== -1)
+      return !!byClass(tree, 'sp-view-progress').length && steps.length === 6
+        && !!byClass(tree, 'sp-step-done').length && !!byClass(tree, 'sp-step-active').length && !!byClass(tree, 'sp-step-pending').length
+    })())
+    check('渲染 stage 说明行 + detail + 事件列表（≤5 条）', (() => {
+      const events = byClass(tree, 'sp-event')
+      return !!byClass(tree, 'sp-progress-line').length && !!byClass(tree, 'sp-progress-detail').length
+        && events.length > 0 && events.length <= 5
+    })())
+    check('进行中：sp-open-session 与 sp-cancel 存在', !!findElement(tree, (el) => classOf(el) === 'sp-open-session') && !!findElement(tree, (el) => classOf(el) === 'sp-cancel'))
+
+    reset()
+    check('点取消任务 → tasks.update status=cancelled → onUpdated', await (async () => {
+      const tree2 = progressTree()
+      await findElement(tree2, (el) => classOf(el) === 'sp-cancel').props.onClick()
+      const call = apiCalls.find((c) => c.method === 'tasks.update')
+      return !!call && call.body.patch.status === 'cancelled' && updatedWith && updatedWith.status === 'cancelled'
+    })())
+
+    reset()
+    check('点打开会话 → openSession 被调用', await (async () => {
+      await findElement(progressTree(), (el) => classOf(el) === 'sp-open-session').props.onClick()
+      return openedSession === true
+    })())
+
+    reset()
+    // 标题含 sp-launch-recovery → 补容器在场断言（变体按 task.status 条件渲染）。
+    check('waiting-launch 变体：sp-launch-recovery + 重试启动 → send 完整 Brief（buildTaskPrompt 文本）→ submitted → status analyzing → onUpdated', await (async () => {
+      extra = { task: baseTask({ status: 'waiting-launch' }) }
+      const tree3 = progressTree()
+      const hasRecovery = !!findElement(tree3, (el) => classOf(el) === 'sp-launch-recovery')
+      await findElement(tree3, (el) => classOf(el) === 'sp-launch-retry').props.onClick()
+      extra = null
+      return hasRecovery && sent.length === 1 && sent[0].text.includes('任务 ID：k1') && sent[0].text.includes('请制作一份演示文稿')
+        && updatedWith && updatedWith.status === 'analyzing'
+    })())
+
+    reset()
+    check('needs-input 变体：问题文本来自最后一条 needs-input 事件；注入回答点发送 → send 补充信息提示', await (async () => {
+      extra = { task: baseTask({ status: 'needs-input', events: [{ at: 't', kind: 'needs-input', text: '利润下降口径？' }] }), answerText: '只看华东区' }
+      const tree4 = progressTree()
+      await findElement(tree4, (el) => classOf(el) === 'sp-needs-input-send').props.onClick()
+      extra = null
+      return treeText(tree4).includes('利润下降口径？') && sent.length === 1
+        && sent[0].text.includes('利润下降口径？') && sent[0].text.includes('只看华东区')
+    })())
+
+    reset()
+    // 计划注记（Step 1 尾）：本视图至少断言 needs-input 发送后 copied → sp-msg-err 一条。
+    check('needs-input 发送 copied（未达会话）→ sp-msg-err 一条在场且不推进状态', await (async () => {
+      extra = {
+        task: baseTask({ status: 'needs-input', events: [{ at: 't', kind: 'needs-input', text: '利润下降口径？' }] }),
+        answerText: '只看华东区',
+        sendToSession: (text, ws) => { sent.push({ text, ws }); return Promise.resolve('copied') },
+      }
+      const copiedTree = progressTree()
+      await findElement(copiedTree, (el) => classOf(el) === 'sp-needs-input-send').props.onClick()
+      extra = null
+      const errRows = collectElements(copiedTree).filter((el) => classOf(el) === 'sp-msg-err')
+      return sent.length === 1 && errRows.length === 1 && updatedWith === null
+    })())
+
+    reset()
+    check('failed 变体：显示失败原因（最后一条事件）+ sp-fail-retry → send 继续指令 + sp-fail-back-outline → onBackToOutline', await (async () => {
+      extra = { task: baseTask({ status: 'failed', events: [{ at: 't', kind: 'fail', text: '渲染验收失败：字体缺失' }] }) }
+      const tree5 = progressTree()
+      await findElement(tree5, (el) => classOf(el) === 'sp-fail-retry').props.onClick()
+      await findElement(tree5, (el) => classOf(el) === 'sp-fail-back-outline').props.onClick()
+      extra = null
+      return treeText(tree5).includes('字体缺失') && sent.length === 1 && sent[0].text.includes('继续') && backedToOutline === true
+    })())
+
+    reset()
+    check('cancelled：只读终态提示 sp-terminal-note，无取消/重试按钮', (() => {
+      extra = { task: baseTask({ status: 'cancelled' }) }
+      const cancelledTree = H.makeProgressView(t, progressOpts())({})
+      extra = null
+      const liveTree = H.makeProgressView(t, progressOpts())({})
+      return !!byClass(cancelledTree, 'sp-terminal-note').length
+        && !findElement(cancelledTree, (el) => classOf(el) === 'sp-cancel')
+        && !!findElement(liveTree, (el) => classOf(el) === 'sp-cancel')
+    })())
+
+    reset()
+    check('i18n 键齐全（zh+en）', (() => {
+      const keys = ['stageReceive', 'stageAnalyze', 'stageOutline', 'stageBuild', 'stagePackage', 'stageReview',
+        'openSession', 'cancelTask', 'launchRecovery', 'launchRetry', 'needsInput', 'inputAnswer', 'inputSend',
+        'errorRecovery', 'failRetry', 'failBackOutline', 'terminalNote', 'waitingStage']
+      return keys.every((k) => zhDict()[k] !== undefined && enDict()[k] !== undefined)
+    })())
+  } catch (error) {
+    // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
+    check('Plan 2b Task 4 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
+}
+
 /* ═══ client 样式：宿主 token + 无嵌套布局（Task 8）═══
    规格「宿主边界与布局约束」：面板是宿主 main 区里的**普通块**——不自建全屏
    容器、不出现 100vw/100vh/position:fixed，宽度与滚动交还宿主；颜色/边框走
@@ -2133,6 +2304,13 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     'sp-task-list', 'sp-task-group-title', 'sp-task-time', 'sp-task-open', 'sp-work-name',
     'sp-group-attention', 'sp-group-active', 'sp-group-failed', 'sp-group-done',
     'sp-recent-empty', 'sp-recent-error', 'sp-recent-retry',
+    // 生成进度视图（Plan 2b Task 4 契约类名，全部须有样式定义）
+    'sp-view-progress', 'sp-progress-head', 'sp-progress-line', 'sp-steps', 'sp-step',
+    'sp-step-done', 'sp-step-active', 'sp-step-pending', 'sp-progress-detail',
+    'sp-progress-events', 'sp-event', 'sp-launch-recovery', 'sp-launch-retry',
+    'sp-launch-cancel', 'sp-needs-input', 'sp-input-answer', 'sp-needs-input-send',
+    'sp-error-recovery', 'sp-fail-retry', 'sp-fail-back-outline', 'sp-cancel',
+    'sp-open-session', 'sp-terminal-note',
   ]
   const unstyled = required.filter(name => !defined(name))
   check('新增视图类名均有样式定义', unstyled.length === 0, unstyled.join(', '))

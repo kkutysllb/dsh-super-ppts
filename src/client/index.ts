@@ -43,13 +43,16 @@
  *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV3
  *    → createTask/createTaskAndStart/buildTaskPrompt → 轮询基元
  *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ makePanelsView（壳）→
- *    各视图工厂（含大纲确认视图 makeOutlineReviewView + 页操作纯函数族）；
+ *    各视图工厂（含大纲确认视图 makeOutlineReviewView + 页操作纯函数族、
+ *    生成进度视图 makeProgressView + 时间线/事件纯函数 progressSteps /
+ *    lastEventOfKind，Plan 2b Task 4）；
  *    测试钩子见 bundle 末尾 `exports.__testHooks`
  *    （MakePanelsView / viewForStatus / statusGroupOf / SP_VIEW_NEW /
  *    SP_VIEW_TASK / isPollingStatus / startTaskPolling / SP_POLL_MS /
  *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
  *    createTask / createTaskAndStart / buildTaskPrompt / outlineOps /
- *    makeOutlineReviewView / sendToChatV3 / clipboardFallback / uploadMaterial）。
+ *    makeOutlineReviewView / makeProgressView / progressSteps /
+ *    lastEventOfKind / sendToChatV3 / clipboardFallback / uploadMaterial）。
  *
  * 8. 新建任务视图（Task 3 已交付）：主题 textarea（sp-topic-input，rows 3）+
  *    快速开始 8 chip（sp-quick-row / sp-quick-chip，点一条填入 qNText）+
@@ -589,6 +592,95 @@ export function makeOutlineReviewView(
   options: PptsOutlineOptions,
 ): (props?: Record<string, unknown>) => unknown {
   return function OutlineReview() { return null }
+}
+
+/**
+ * 生成进度视图原语（Plan 2b Task 4；真实形态见 lib/client.js 同名符号）：
+ * agent 经 ppts_task 上报的 stage{key,index,total} 是**任意总步数**，面板固定
+ * 渲染六阶段时间线——线性归一映射（Math.ceil 向上取整，保证「有汇报必有
+ * active 步」）；fail 原因 / needs-input 问题统一取该 kind 的最近一条事件。
+ */
+/** 固定六阶段标签键（sp-step ×6 的渲染顺序）。 */
+export const SP_STAGES: string[] = ['stageReceive', 'stageAnalyze', 'stageOutline', 'stageBuild', 'stagePackage', 'stageReview']
+
+/** 单步状态：done（已过）/ active（进行中）/ pending（未到）。 */
+export interface PptsProgressStep {
+  key: string
+  state: 'done' | 'active' | 'pending'
+}
+
+/** agent 上报的阶段投影（host TaskStage 的最小消费形状）。 */
+export interface PptsProgressStage {
+  key?: string
+  index?: number
+  total?: number
+  detail?: string
+}
+
+/** 时间线映射：无 stage（或 index/total 非法）→ 全 pending；否则 index/total
+ *  线性映射到六步（向上取整并钳位 1..6）。 */
+export function progressSteps(stage: PptsProgressStage | null | undefined): PptsProgressStep[] {
+  return SP_STAGES.map((key) => ({ key, state: 'pending' as const }))
+}
+
+/** 最近一条指定 kind 的事件（无 → null；events 按 host 追加序旧→新）。 */
+export function lastEventOfKind(
+  task: { events?: Array<{ at?: string; kind?: string; text?: string }> } | null | undefined,
+  kind: string,
+): { at?: string; kind?: string; text?: string } | null {
+  return null
+}
+
+/** 进度视图记录的最小消费形状（tasks.get TaskRecord 的视图侧投影）。 */
+export interface PptsProgressTaskRecord {
+  id?: string
+  title?: string
+  status?: string
+  workspace?: { id?: string; name?: string; path?: string }
+  brief?: Record<string, unknown>
+  outline?: { version?: number; pages?: unknown[] }
+  stage?: PptsProgressStage
+  events?: Array<{ at?: string; kind?: string; text?: string }>
+}
+
+/**
+ * 生成进度视图选项。sendToSession=会话桥（重试启动/发送补充/重试阶段投递）；
+ * openSession=壳层会话桥（Task 6 接线，冒烟传 stub）；onBackToOutline=错误恢复
+ * 区「返回修改大纲」。answerText 为**仅测试注入**（stub React 无重渲染，
+ * 冒烟经 options 构造补充回答初值）。
+ */
+export interface PptsProgressOptions {
+  task?: PptsProgressTaskRecord
+  api?(method: string, body: Record<string, unknown>): Promise<unknown>
+  sendToSession?(text: string, workspaceId?: string): Promise<'submitted' | 'copied' | 'none'>
+  onUpdated?(next: unknown): void
+  onBack?(): void
+  onBackToOutline?(): void
+  openSession?(): void
+  answerText?: string
+}
+
+/**
+ * 生成进度视图工厂（Plan 2b Task 4；真实形态见 lib/client.js）。D1：
+ * creating/waiting-launch/analyzing/building/reviewing/needs-input/failed/
+ * cancelled 全部落在此视图；四个状态变体按 task.status **条件渲染**（启动
+ * 恢复区/补充信息区/错误恢复区/只读终态）。D2 硬约束：取消 = tasks.update
+ * status:'cancelled'（仅活跃态渲染 sp-cancel，不做 paused）；重试启动重投
+ * 完整 Brief（buildTaskPrompt）成功后推 analyzing；发送补充（buildNeedsInput-
+ * Prompt）成功后回 building；重试当前阶段（buildContinuePrompt）**不自动改
+ * 状态**。类名契约（断言按 token 精确匹配，勿复合拼接）：sp-view-progress /
+ * sp-progress-head(sp-back·sp-task-title·sp-task-status) / sp-progress-line /
+ * sp-steps>sp-step(sp-step-done|sp-step-active|sp-step-pending) /
+ * sp-progress-detail / sp-progress-events>sp-event / sp-launch-recovery
+ * (sp-launch-retry·sp-launch-cancel) / sp-needs-input(sp-input-answer·
+ * sp-needs-input-send) / sp-error-recovery(sp-fail-retry·sp-fail-back-outline)
+ * / sp-cancel / sp-open-session / sp-terminal-note / sp-msg-ok·sp-msg-err。
+ */
+export function makeProgressView(
+  t: (key: string, params?: Record<string, unknown>) => string,
+  options: PptsProgressOptions,
+): (props?: Record<string, unknown>) => unknown {
+  return function Progress() { return null }
 }
 
 /**
