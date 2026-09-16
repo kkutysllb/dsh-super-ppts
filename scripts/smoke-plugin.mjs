@@ -837,6 +837,10 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     ['uiWorkspace', 'uiWorkspace'],                                   // 工作区导航服务
     ['openWorkspace', 'openWorkspace'],                               // 跨工作区落点
     ['useWorkspaces', 'useWorkspaces'],                               // 工作台工作区行(全局标准 hook)
+    ['makePanelsView', 'makePanelsView'],                             // 任务面板壳(视图状态机,main keyed)
+    ['SP_VIEW_NEW', 'SP_VIEW_NEW'],                                   // 视图常量(默认落点=新建任务)
+    ['viewForStatus', 'viewForStatus'],                               // 任务状态 → 恢复落点视图
+    ['statusGroupOf', 'statusGroupOf'],                               // 任务状态 → 分组(最近任务)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -1127,6 +1131,41 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   check('client 软探测回退（宿主 ≤0.1.4 静默跳过）', client.includes('宿主无左侧栏 slot'))
   check('工作台读全局工作区 hook（useWorkspaces 选择器）', client.includes('useWorkspaces(function'))
   check('工作台状态完备（加载/空/错误/重试）', client.includes('wsLoading') && client.includes('wsEmpty') && client.includes('loadFailed') && client.includes('retry'))
+}
+
+/* ═══ client 面板壳：视图状态机 ═══ */
+{
+  const registrations = []
+  const ctxStub = {
+    slots: {
+      inject(slotType, loader) { loader() },
+      register(options, component) { registrations.push({ options, component }); return () => {} },
+    },
+    locale: {
+      register() { return () => {} },
+      bind() { return (key) => key },
+    },
+    sessions: {
+      list: { getSnapshot: () => ({ current: 'sess-1' }) },
+      scope: () => ({ conversation: { input: { for: () => ({ setDraft() {}, submit() {} }) } } }),
+      create: async () => 'sess-new',
+      open() {},
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [], phase: 'ready' }) } },
+    layout: { selectPanel() {} },
+    effect(fn) { return fn() },
+  }
+  loadedModule.apply(ctxStub)
+  const panel = registrations.find(r => r.options.name === 'main')
+  check('client 注册 main keyed 面板', !!panel && panel.options.key === 'super-ppts-panel')
+  const tree = panel.component({ useWorkspaces: (selector) => selector({ items: [], phase: 'ready' }) })
+  check('面板壳渲染出视图切换（新建任务 / 最近任务）',
+    byClass(tree, 'sp-tabs').length === 1
+      && treeText(byClass(tree, 'sp-tabs')[0]).includes('newTask')
+      && treeText(byClass(tree, 'sp-tabs')[0]).includes('recent'))
+  check('默认落在新建任务视图', byClass(tree, 'sp-view-new-task').length === 1)
+  check('面板壳不存在嵌套自建侧边栏/全屏容器',
+    byClass(tree, 'sp-sidebar').length === 0 && byClass(tree, 'sp-fullscreen').length === 0)
 }
 
 /* ═══ 清理与结论 ═══ */

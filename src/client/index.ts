@@ -26,6 +26,18 @@
  *    + 会话输入框程序化填充（sessions.scope(id).conversation.input
  *    .for(actx).setDraft）；剪贴板为降级路径（copyToClipboardBridge）。
  *
+ * 7. 任务面板壳（0.1.5 sidebar.panellist + main keyed）：主面板是
+ *    makePanelsView 产出的**单列**任务工作区——顶部两个轻量视图切换
+ *    （[新建任务][最近任务]）+ 视图分发 + 共享任务列表状态。视图是
+ *    「工厂返回组件」形态（makeNewTaskView / makeRecentView /
+ *    makeTemplatePicker），容器类名由壳层随元素下发
+ *    （sp-view-new-task / sp-view-recent）。壳层宽度与滚动归宿主：
+ *    **不自建**侧边栏 / 右侧固定栏 / 全屏容器 / 100vw / 100vh。
+ *    文件内分层：SP_* 常量 → api/uploadMaterial/sendToChatV3 →
+ *    makePanelsView（壳）→ 各视图工厂；测试钩子见 bundle 末尾
+ *    `exports.__testHooks`（MakePanelsView / viewForStatus /
+ *    statusGroupOf / SP_VIEW_NEW / makeNewTaskView / makeRecentView）。
+ *
  * APPLY NOTE：访问 ctx.slots / ctx.locale 需要两处同时声明——
  * - exports.inject = ['slots', 'locale', 'sessions', 'uiConversation',
  *   'uiWorkspace', 'workspaces', 'layout']（cordis 服务名）；
@@ -90,6 +102,112 @@ export function registerSettingsNavIcon(label: () => string): () => void {
     for (const element of marked) element.removeAttribute(NAV_MARKER)
   }
 }
+
+/* ── 任务面板壳 / 视图状态机（与 lib/client.js 同构，以其实现为准）─────
+ * 真实分层：SP_* 常量 → api / uploadMaterial / sendToChatV3 →
+ * makePanelsView（面板壳）→ makeNewTaskView / makeRecentView /
+ * makeTemplatePicker（视图工厂，返回组件）。
+ * 本节的函数体只是**类型参考占位**，真实形态见 lib/client.js 同名符号。
+ * 旧工作台 makeWorkbenchComponent（v2：工作区选择行 + 状态文案）仍保留在
+ * lib/client.js 内（其 useWorkspaces 选择器用法与加载/空/错误文案由新视图
+ * 承接），但 main keyed 主面板已改为 makePanelsView。
+ */
+
+/** 面板壳视图常量：新建任务（默认落点）/ 最近任务。 */
+export const SP_VIEW_NEW = 'new-task'
+export const SP_VIEW_RECENT = 'recent'
+
+/* 视图容器类名契约（壳层随元素下发、视图根沿用，不产生多余包裹层）：
+ * 新建任务 → 'sp-view-new-task'；最近任务 → 'sp-view-recent'。 */
+
+/**
+ * 任务状态 → 恢复落点视图（Plan 2b 补 outline / progress / result 三个落点）：
+ * waiting-outline | needs-input → outline；analyzing | building | reviewing | failed
+ * → progress；completed → result；其余（creating / waiting-launch / cancelled / 未知）
+ * → SP_VIEW_NEW。
+ */
+export function viewForStatus(status?: string): string {
+  switch (status) {
+    case 'waiting-outline':
+    case 'needs-input':
+      return 'outline'
+    case 'analyzing':
+    case 'building':
+    case 'reviewing':
+      return 'progress'
+    case 'completed':
+      return 'result'
+    case 'failed':
+      return 'progress'
+    default:
+      return SP_VIEW_NEW
+  }
+}
+
+/** 状态分组：待处理优先（与 host 的恢复优先级口径一致），供「最近任务」分组渲染。 */
+export function statusGroupOf(status?: string): 'attention' | 'active' | 'failed' | 'done' | 'other' {
+  if (status === 'waiting-outline' || status === 'needs-input') return 'attention'
+  if (status === 'creating' || status === 'waiting-launch' || status === 'analyzing'
+    || status === 'building' || status === 'reviewing') return 'active'
+  if (status === 'failed') return 'failed'
+  if (status === 'completed') return 'done'
+  return 'other'
+}
+
+/** 面板壳 bridges：本任务只注入 api；其余由后续任务实现后注入。 */
+export interface PptsPanelBridges {
+  /** 任务数据面（既有 api）：POST /super-ppts/api/<method>（tasks.list / tasks.get / …）。 */
+  api(method: string, body?: unknown): Promise<unknown>
+  /** Task 5 实现：素材原始流式上传（POST /super-ppts/tasks/upload?taskId=&name=）。 */
+  uploadMaterial?: unknown
+  /** Task 6 实现：会话桥 v3（定位会话 → setDraft → submit，任务自动启动）。 */
+  sendToChatV3?: unknown
+}
+
+/**
+ * 面板壳工厂（真实实现见 lib/client.js 的 makePanelsView）：返回宿主 main
+ * keyed 槽位使用的组件——顶部 `sp-tabs`（[新建任务][最近任务]），视图容器
+ * `sp-panels`，按 view 分发到 makeNewTaskView / makeRecentView，并共享任务
+ * 列表状态（tasks / loadErr / refresh）。
+ */
+export function makePanelsView(
+  t: (key: string, params?: Record<string, unknown>) => string,
+  bridges: PptsPanelBridges,
+): (props?: Record<string, unknown>) => unknown {
+  return function Panels() { return null }
+}
+
+/** 新建任务视图工厂（Task 3 实现；真实形态见 lib/client.js 的 makeNewTaskView）。 */
+export function makeNewTaskView(
+  t: (key: string, params?: Record<string, unknown>) => string,
+  options: Record<string, unknown>,
+): (props?: Record<string, unknown>) => unknown {
+  return function NewTaskView() { return null }
+}
+
+/** 最近任务视图工厂（Task 7 实现；真实形态见 lib/client.js 的 makeRecentView）。 */
+export function makeRecentView(
+  t: (key: string, params?: Record<string, unknown>) => string,
+  options: Record<string, unknown>,
+): (props?: Record<string, unknown>) => unknown {
+  return function RecentView() { return null }
+}
+
+/** 模板选择器工厂（Task 4 实现；真实形态见 lib/client.js 的 makeTemplatePicker）。 */
+export function makeTemplatePicker(
+  t: (key: string, params?: Record<string, unknown>) => string,
+  options: Record<string, unknown>,
+): (props?: Record<string, unknown>) => unknown {
+  return function TemplatePicker() { return null }
+}
+
+/* 后续任务符号（此处仅 JSDoc 引用，实现由各自任务追加到 lib/client.js）：
+ * - uploadMaterial(method='tasks.upload' 原始流)：Task 5，素材上传；
+ * - sendToChatV3(task, sessionId)：Task 6，定位会话 → conversation.input
+ *   .for(actx).setDraft(text) → submit()（任务自动启动，无需回聊天窗口回车）；
+ * - buildBriefFrom(state)：Task 3，按 host 契约组装 brief（templateId 三态保真）。
+ * - api(method, body)：既有实现，复用为任务数据面客户端（tasks.* / templates.list）。
+ */
 
 /** v2 草稿桥结果：'draft' = 已填输入框；'copied' = 剪贴板降级成功；'none' = 全失败。 */
 export type SendToChatResult = 'draft' | 'copied' | 'none'
@@ -186,8 +304,8 @@ export function apply(ctx: PptsClientContext): void {
       function Stateful() { return null },
     ),
   )
-  // 0.1.5 左侧栏原生接入:panellist 图标行 + main keyed 工作台主面板
-  // （makeWorkbenchComponent,真实形态见 lib/client.js）;宿主 ≤0.1.4 软回退。
+  // 0.1.5 左侧栏原生接入:panellist 图标行 + main keyed 任务面板壳
+  // （makePanelsView,真实形态见 lib/client.js）;宿主 ≤0.1.4 软回退。
   ctx.slots.inject('sidebar.panellist', () => {
     const disposeIcon = ctx.slots.register(
       { name: 'sidebar.panellist', id: 'super-ppts-panel', order: 100, label: () => t('nav'), locale: 'superPpts' },
@@ -195,7 +313,8 @@ export function apply(ctx: PptsClientContext): void {
     )
     const disposePanel = ctx.slots.register(
       { name: 'main', key: 'super-ppts-panel' },
-      // 工作台组件（makeWorkbenchComponent，真实形态见 lib/client.js）：
+      // 任务面板壳（makePanelsView(t, { api })——sendToChatV3 / uploadMaterial
+      // 由后续任务实现后注入，真实形态见 lib/client.js）：
       // root 面板接收全局标准 props useWorkspaces（工作区选择行，
       // 选择器用法 useWorkspaces(s => s.items)；旧宿主缺失时行隐藏）。
       function Workbench() { return null },
