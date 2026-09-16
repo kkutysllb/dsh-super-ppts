@@ -29,6 +29,7 @@
 
 **Files:**
 - Create: `src/builtin-templates.ts`
+- Modify: `tsconfig.json`（登记新源文件——本仓库 `include` 是**显式文件白名单**，漏登记则不产出 `lib` 产物，冒烟会 `ERR_MODULE_NOT_FOUND`）
 - Test: `scripts/smoke-plugin.mjs`（新增断言块）
 
 - [ ] **Step 1: 写失败测试**
@@ -60,7 +61,7 @@ disposeRoutes()
 Run: `npm run build && npm run smoke`
 Expected: FAIL — `Cannot find module '.../lib/builtin-templates.js'`（构建产物缺失，断言抛错整段失败）
 
-- [ ] **Step 3: 实现模块**
+- [ ] **Step 3: 实现模块并登记构建**
 
 创建 `src/builtin-templates.ts`：
 
@@ -142,6 +143,19 @@ export const BUILTIN_TEMPLATES: readonly BuiltinTemplate[] = [
 ]
 ```
 
+然后把新源文件登记进 `tsconfig.json` 的 `include` 数组（追加到 `src/routes.ts` 之后）：
+
+```json
+  "include": [
+    "src/paths.ts",
+    "src/index.ts",
+    "src/tools.ts",
+    "src/templates.ts",
+    "src/routes.ts",
+    "src/builtin-templates.ts"
+  ]
+```
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `npm run build && npm run smoke`
@@ -160,6 +174,7 @@ git commit -m "feat(host): builtin template metadata module"
 
 **Files:**
 - Create: `src/tasks.ts`
+- Modify: `tsconfig.json`（登记 `src/tasks.ts`——同 Task 1 的白名单要求）
 - Test: `scripts/smoke-plugin.mjs`
 
 - [ ] **Step 1: 写失败测试**
