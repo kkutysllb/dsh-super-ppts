@@ -919,6 +919,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['buildOutlineRevisePrompt', 'buildOutlineRevisePrompt'],         // 自然语言修改大纲指令(Task 2)
     ['makeOutlineReviewView', 'makeOutlineReviewView'],               // 大纲确认视图(Plan 2b Task 3;确认门+未保存态)
     ['makeProgressView', 'makeProgressView'],                         // 生成进度视图(Plan 2b Task 4;六阶段时间线+恢复变体)
+    ['makeResultView', 'makeResultView'],                             // 结果视图(Plan 2b Task 5;产物引用+继续修改)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -2270,6 +2271,127 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   }
 }
 
+/* ═══ Plan 2b Task 5：结果视图（产物条目 + 复制路径 + 自然语言继续修改）═══
+   stub React 不重渲染：快捷 chip 的 onClick 真接线（真实 React 可观察
+   setContinueText），冒烟按计划断到「四个 chip 且 onClick 是函数且点击后
+   sent 仍空」——这是该约束下的最大可证性（Task 3 同类处理）；continueText
+   与 Task 3/4 的 reviseText/answerText 同法经 options 注入初值；提示行
+   （sp-msg-ok / sp-msg-err）常驻渲染、display 切换；异步断言一律
+   check(name, await (async () => …)())。navigator.clipboard 临时挂到
+   sandboxGlobal（bundle 所在 vm realm 的 globalThis——外层 realm 与 bundle
+   无关），断言后必须还原。 */
+{
+  const H = loadedModule.__testHooks
+  const t = (key) => key
+  const resultTask = (over) => Object.assign({
+    id: 'k1', title: 'Q3 经营复盘', status: 'completed',
+    workspace: { id: 'ws1', name: '季度汇报', path: '/ws' },
+    brief: { topic: 'Q3 经营复盘', format: 'pptx' },
+    outlineVersion: 1, outline: { version: 1, pages: [{ id: 'p1', title: 'a', bullets: [] }, { id: 'p2', title: 'b', bullets: [] }, { id: 'p3', title: 'c', bullets: [] }] },
+    materials: [], artifacts: [
+      { type: 'pptx', path: '/ws/Q3-review.pptx', status: 'ready' },
+      { type: 'pdf', path: '/ws/Q3-review.pdf', status: 'missing' },
+    ],
+    events: [],
+  }, over)
+  // 整理级修正（任务书列明的计划 setup 瑕疵，断言语义与数量不变）：
+  //  ① resultTask 去掉多余键 events2: undefined；
+  //  ② let apiCallsR 前置与 sent 同处声明（计划原文先用后声明），并删去
+  //     死变量 apiCalls——resultOpts/resetR 通篇用的都是 apiCallsR（③）。
+  const sent = []; let apiCallsR = []; let updatedWith = null; let extra = null
+  const resultOpts = () => Object.assign({
+    task: resultTask(),
+    api: (method, body) => { apiCallsR.push({ method, body }); return Promise.resolve(Object.assign({}, resultTask(), body && body.patch && body.patch.status ? { status: body.patch.status } : {})) },
+    sendToSession: (text, ws) => { sent.push({ text, ws }); return Promise.resolve('submitted') },
+    onUpdated: (next) => { updatedWith = next },
+  }, extra || {})
+  const resetR = () => { sent.length = 0; apiCallsR = []; updatedWith = null; extra = null }
+  const resultTree = () => H.makeResultView(t, resultOpts())({})
+  // 整理级修正：byClass('sp-artifact') 子串匹配会顺带命中容器 sp-artifacts /
+  // sp-artifact-* 子元素（Task 3/4 sp-step/sp-outline-page 同法）——产物条目
+  // 计数改 token 全等筛选（语义不变：条目卡片数）。
+  const artifactItems = (tree) => collectElements(tree).filter((el) => classOf(el) === 'sp-artifact')
+  try {
+    const tree = resultTree()
+    // 标题含根类名 → 判定式补根类名在场（Task 4 同法；语义只增强不削弱）。
+    check('结果视图根类名 + 摘要行含页数与交付形态文案', (() => {
+      const summary = byClass(tree, 'sp-result-summary')
+      return !!byClass(tree, 'sp-view-result').length
+        && !!summary.length && treeText(summary).includes('3 页') && treeText(summary).includes('pptx')
+    })())
+    check('产物条目×2：ready 徽标 + missing 丢失提示 + 路径文本 + 复制按钮', (() => {
+      const items = artifactItems(tree)
+      return items.length === 2
+        && !!findElement(items[1], (el) => classOf(el) === 'sp-artifact-copy')
+        && treeText(items[1]).includes('missing') || treeText(items[1]).includes('artifactMissing')
+    })())
+    check('点复制路径 → copyText 收到产物路径（stub navigator.clipboard）', await (async () => {
+      const written = []
+      sandboxGlobal.navigator = { clipboard: { writeText: (s) => { written.push(s); return Promise.resolve() } } }
+      try {
+        const tree2 = resultTree()
+        // 整理级修正：计划原文在全树找第一个 sp-artifact-copy（= pptx 条目），
+        // 断言的却是第二个条目的 pdf 路径——点击对象与期望路径对齐（语义不变：
+        // 点某条目的复制按钮 → 写入的是该条目的路径）。
+        await findElement(artifactItems(tree2)[1], (el) => classOf(el) === 'sp-artifact-copy').props.onClick()
+      } finally {
+        sandboxGlobal.navigator = undefined
+      }
+      return written.length === 1 && written[0] === '/ws/Q3-review.pdf'
+    })())
+    check('复制在无 navigator 时静默不抛', await (async () => {
+      let threw = false
+      try { await H.copyText('/ws/x.pptx', { writeText: async () => {} }) } catch (e) { threw = true }
+      // 第二参注入实现；缺省 navigator 缺失也必须不抛
+      let threw2 = false
+      try { await H.copyText('/ws/x.pptx') } catch (e) { threw2 = true }
+      return !threw && !threw2
+    })())
+    check('无产物 → sp-artifacts-empty 空态', (() => {
+      extra = { task: resultTask({ artifacts: [] }) }
+      const tree3 = resultTree()
+      extra = null
+      return !!byClass(tree3, 'sp-artifacts-empty').length
+    })())
+    check('注入修改要求 → 提交修改 → send 含要求与任务 id → submitted → tasks.update building → onUpdated', await (async () => {
+      resetR(); extra = { continueText: '把第 3 页改成折线图' }
+      const tree4 = resultTree()
+      await findElement(tree4, (el) => classOf(el) === 'sp-result-submit').props.onClick()
+      extra = null
+      const call = apiCallsR.find((c) => c.method === 'tasks.update')
+      return sent.length === 1 && sent[0].text.includes('把第 3 页改成折线图') && sent[0].text.includes('任务 ID：k1')
+        && !!call && call.body.patch.status === 'building' && updatedWith && updatedWith.status === 'building'
+    })())
+    check('继续修改发送失败（copied/none）→ sp-msg-err 且状态不变', await (async () => {
+      resetR(); extra = { sendToSession: () => Promise.resolve('none'), continueText: '压缩到 7 页' }
+      const tree4 = resultTree()
+      await findElement(tree4, (el) => classOf(el) === 'sp-result-submit').props.onClick()
+      extra = null
+      return !!findElement(tree4, (el) => classOf(el) === 'sp-msg-err') && apiCallsR.every((c) => c.method !== 'tasks.update')
+    })())
+    check('快捷 chip 填入文案（四个 chip 的 onClick 调 onContinueText 不发送）', (() => {
+      resetR()
+      const chips = byClass(resultTree(), 'sp-result-quick-chip')
+      return chips.length === 4 && chips.every((chip) => typeof chip.props.onClick === 'function') && sent.length === 0
+    })())
+    check('产物丢失条目的「重新生成」→ send buildRegeneratePrompt 文本（含类型与原路径）', await (async () => {
+      resetR()
+      const tree5 = resultTree()
+      const missingItem = artifactItems(tree5)[1]
+      await findElement(missingItem, (el) => classOf(el) === 'sp-artifact-regen').props.onClick()
+      return sent.length === 1 && sent[0].text.includes('pdf') && sent[0].text.includes('/ws/Q3-review.pdf')
+    })())
+    check('i18n 键齐全（zh+en）', (() => {
+      const keys = ['resultSummary', 'artifactReady', 'artifactMissing', 'artifactRegen', 'copyPath',
+        'artifactsEmpty', 'continueEdit', 'continueSubmit', 'quickRedoPage', 'quickRestyle', 'quickShrink', 'quickRerender']
+      return keys.every((k) => zhDict()[k] !== undefined && enDict()[k] !== undefined)
+    })())
+  } catch (error) {
+    // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
+    check('Plan 2b Task 5 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
+}
+
 /* ═══ client 样式：宿主 token + 无嵌套布局（Task 8）═══
    规格「宿主边界与布局约束」：面板是宿主 main 区里的**普通块**——不自建全屏
    容器、不出现 100vw/100vh/position:fixed，宽度与滚动交还宿主；颜色/边框走
@@ -2311,6 +2433,11 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     'sp-launch-cancel', 'sp-needs-input', 'sp-input-answer', 'sp-needs-input-send',
     'sp-error-recovery', 'sp-fail-retry', 'sp-fail-back-outline', 'sp-cancel',
     'sp-open-session', 'sp-terminal-note',
+    // 结果视图（Plan 2b Task 5 契约类名，全部须有样式定义）
+    'sp-view-result', 'sp-result-head', 'sp-result-summary', 'sp-artifacts', 'sp-artifact',
+    'sp-artifact-type', 'sp-artifact-status', 'sp-artifact-path', 'sp-artifact-copy',
+    'sp-artifact-regen', 'sp-artifacts-empty', 'sp-result-continue', 'sp-result-continue-text',
+    'sp-result-submit', 'sp-result-quick', 'sp-result-quick-chip',
   ]
   const unstyled = required.filter(name => !defined(name))
   check('新增视图类名均有样式定义', unstyled.length === 0, unstyled.join(', '))

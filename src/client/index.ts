@@ -45,14 +45,16 @@
  *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ makePanelsView（壳）→
  *    各视图工厂（含大纲确认视图 makeOutlineReviewView + 页操作纯函数族、
  *    生成进度视图 makeProgressView + 时间线/事件纯函数 progressSteps /
- *    lastEventOfKind，Plan 2b Task 4）；
+ *    lastEventOfKind、结果视图 makeResultView + 复制原语 copyText，
+ *    Plan 2b Task 4/5）；
  *    测试钩子见 bundle 末尾 `exports.__testHooks`
  *    （MakePanelsView / viewForStatus / statusGroupOf / SP_VIEW_NEW /
  *    SP_VIEW_TASK / isPollingStatus / startTaskPolling / SP_POLL_MS /
  *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
  *    createTask / createTaskAndStart / buildTaskPrompt / outlineOps /
  *    makeOutlineReviewView / makeProgressView / progressSteps /
- *    lastEventOfKind / sendToChatV3 / clipboardFallback / uploadMaterial）。
+ *    lastEventOfKind / makeResultView / copyText / sendToChatV3 /
+ *    clipboardFallback / uploadMaterial）。
  *
  * 8. 新建任务视图（Task 3 已交付）：主题 textarea（sp-topic-input，rows 3）+
  *    快速开始 8 chip（sp-quick-row / sp-quick-chip，点一条填入 qNText）+
@@ -681,6 +683,62 @@ export function makeProgressView(
   options: PptsProgressOptions,
 ): (props?: Record<string, unknown>) => unknown {
   return function Progress() { return null }
+}
+
+/** 结果视图记录的最小消费形状（tasks.get TaskRecord 的视图侧投影）。 */
+export interface PptsResultTaskRecord {
+  id?: string
+  title?: string
+  status?: string
+  workspace?: { id?: string; name?: string; path?: string }
+  brief?: { format?: string; [k: string]: unknown }
+  outline?: { version?: number; pages?: unknown[] }
+  artifacts?: Array<{ type?: string; path?: string; status?: string }>
+}
+
+/**
+ * 结果视图选项。sendToSession=会话桥（继续修改投递 / 丢失产物重新生成）；
+ * onUpdated=tasks.update 成功回执（building → 壳层路由进进度视图）。
+ * continueText 为**仅测试注入**（stub React 无重渲染，冒烟经 options 构造
+ * 继续修改草稿初值，与 reviseText/answerText 同法）。
+ */
+export interface PptsResultOptions {
+  task?: PptsResultTaskRecord
+  api?(method: string, body: Record<string, unknown>): Promise<unknown>
+  sendToSession?(text: string, workspaceId?: string): Promise<'submitted' | 'copied' | 'none'>
+  onUpdated?(next: unknown): void
+  onBack?(): void
+  continueText?: string
+}
+
+/**
+ * 产物路径复制原语（Plan 2b Task 5；真实形态见 lib/client.js）。
+ * navigator.clipboard 优先，其次显式 impl 注入（{ writeText } 形状，供冒烟）；
+ * 两者皆缺静默 resolve——复制失败绝不抛错。
+ */
+export function copyText(text: string, impl?: { writeText?(value: string): unknown }): Promise<void> {
+  return Promise.resolve()
+}
+
+/**
+ * 结果视图工厂（Plan 2b Task 5；真实形态见 lib/client.js）。D3 硬约束：
+ * 产物**无下载路由**——条目操作 = 复制路径（copyText）+ missing 时的
+ * 「重新生成」（buildRegeneratePrompt 经会话桥，不改状态）。继续修改 =
+ * buildContinueEditPrompt 投递，submitted 后 tasks.update status:'building'
+ * → onUpdated；copied/none → sp-msg-err 不发 tasks.update。摘要行页数取
+ * outline.pages.length、形态取 brief.format。快捷 chip 四个只填文案不发送。
+ * 类名契约：sp-view-result / sp-result-head(sp-back·sp-task-title·
+ * sp-task-status) / sp-result-summary / sp-artifacts>sp-artifact
+ * (sp-artifact-type·sp-artifact-status·sp-artifact-path·sp-artifact-copy·
+ * sp-artifact-regen) / sp-artifacts-empty / sp-result-continue
+ * (sp-result-continue-text·sp-result-submit·sp-result-quick>
+ * sp-result-quick-chip×4) / sp-msg-ok·sp-msg-err。
+ */
+export function makeResultView(
+  t: (key: string, params?: Record<string, unknown>) => string,
+  options: PptsResultOptions,
+): (props?: Record<string, unknown>) => unknown {
+  return function Result() { return null }
 }
 
 /**
