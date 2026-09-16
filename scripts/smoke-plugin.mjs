@@ -198,6 +198,18 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
   check('留底后 registry.json 已让位（可安全重写）', !existsSync(REGISTRY_FILE))
 }
 
+/* ═══ 1.4 内置模板元数据 ═══ */
+{
+  const builtin = await import('../lib/builtin-templates.js')
+  const list = builtin.BUILTIN_TEMPLATES
+  check('内置模板 ≥ 4 个', Array.isArray(list) && list.length >= 4, String(list?.length))
+  check('内置模板字段齐备（id/name/source/scenario/tags）',
+    list.every(item => typeof item.id === 'string' && item.id !== ''
+      && item.source === 'builtin' && typeof item.name === 'string'
+      && typeof item.scenario === 'string' && Array.isArray(item.tags)))
+  check('内置模板 id 唯一', new Set(list.map(item => item.id)).size === list.length)
+}
+
 disposeRoutes()
 check('disposer 后路由已注销', routes.size === 0)
 

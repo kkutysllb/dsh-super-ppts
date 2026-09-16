@@ -15,6 +15,7 @@
     "src/index.ts",
     "src/tools.ts",
     "src/templates.ts",
-    "src/routes.ts"
+    "src/routes.ts",
+    "src/builtin-templates.ts"
   ]
 }
