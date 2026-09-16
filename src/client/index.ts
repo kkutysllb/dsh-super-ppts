@@ -38,7 +38,10 @@
  *    （[新建任务][最近任务]，任务详情态都不高亮）+ 三态视图分发
  *    （new-task / recent / **task 详情**，Plan 2b Task 6 接线：详情按
  *    routeSubView(active) 落三视图，forcedSub 覆盖优先，活跃态 3s 轮询，
- *    attention 提示行）+ 共享任务列表状态。视图是
+ *    attention 提示行；实现后审查修正：详情组件类型按 (sub|taskId) 经
+ *    ensureDetailView 缓存——内联工厂调用会在每次轮询 re-render 产生新
+ *    类型导致 remount 丢编辑；live task/回调经 props 流入，视图内
+ *    props 优先、工厂 opts 兜底）+ 共享任务列表状态。视图是
  *    「工厂返回组件」形态（makeNewTaskView / makeRecentView /
  *    makeTemplatePicker），视图根**自持**容器类名
  *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动归宿主：
@@ -47,7 +50,7 @@
  *    → createTask/createTaskAndStart/buildTaskPrompt → 轮询基元
  *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ 壳层联动纯函数
  *    （routeSubView / shouldClearForced / attentionEntries / openTaskRecord /
- *    byUpdatedDesc，Task 6）→ makePanelsView（壳）→
+ *    byUpdatedDesc，Task 6；ensureDetailView，实现后审查修正）→ makePanelsView（壳）→
  *    各视图工厂（含大纲确认视图 makeOutlineReviewView + 页操作纯函数族、
  *    生成进度视图 makeProgressView + 时间线/事件纯函数 progressSteps /
  *    lastEventOfKind、结果视图 makeResultView + 复制原语 copyText，
@@ -56,7 +59,7 @@
  *    （MakePanelsView / viewForStatus / statusGroupOf / SP_VIEW_NEW /
  *    SP_VIEW_TASK / isPollingStatus / startTaskPolling / SP_POLL_MS /
  *    routeSubView / shouldClearForced / attentionEntries / openTaskRecord /
- *    byUpdatedDesc /
+ *    ensureDetailView / byUpdatedDesc /
  *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
  *    createTask / createTaskAndStart / buildTaskPrompt / outlineOps /
  *    makeOutlineReviewView / makeProgressView / progressSteps /
@@ -161,7 +164,8 @@ export function registerSettingsNavIcon(label: () => string): () => void {
  * 真实分层：SP_* 常量 → api / uploadMaterial / sendToChatV3 →
  * 轮询基元（isPollingStatus / startTaskPolling / SP_POLL_STATUSES /
  * SP_POLL_MS）→ 壳层联动纯函数（routeSubView / shouldClearForced /
- * attentionEntries / openTaskRecord / byUpdatedDesc）→ makePanelsView（面板壳）
+ * attentionEntries / openTaskRecord / byUpdatedDesc / ensureDetailView（详情
+ * 组件类型缓存，实现后审查修正）→ makePanelsView（面板壳）
  * → makeNewTaskView / makeRecentView / makeTemplatePicker /
  * makeOutlineReviewView / makeProgressView / makeResultView（视图工厂，返回组件）。
  * 本节的函数体只是**类型参考占位**，真实形态见 lib/client.js 同名符号。
@@ -293,6 +297,46 @@ export function openTaskRecord(
   return Promise.resolve()
 }
 
+/**
+ * 详情视图组件缓存（实现后审查修正；真实形态见 lib/client.js 同名函数）：
+ * key=(sub|taskId) 稳定则复用**同一组件类型**——轮询 setActive 触发的
+ * re-render 若重建工厂产物（新函数对象=新类型），真 React 按 type 身份
+ * unmount/remount，视图内未保存编辑被静默重置。cacheRef 为 useRef 形态
+ * {current}；make 是 (sub) => Component 惰性工厂（api/sendToSession 等
+ * 稳定引用经工厂 opts 注入，live task/回调走 props 流入）。
+ */
+export interface PptsDetailCacheSlot {
+  current: { key: string; Comp: unknown } | null
+}
+
+export function ensureDetailView<T>(
+  cacheRef: PptsDetailCacheSlot,
+  sub: string,
+  taskId: string,
+  make: (sub: string) => T,
+): T {
+  const c = cacheRef.current
+  if (c && c.key === sub + '|' + taskId) return c.Comp as T
+  const Comp = make(sub)
+  cacheRef.current = { key: sub + '|' + taskId, Comp }
+  return Comp
+}
+
+/**
+ * 壳层传给详情三视图的 props（实现后审查修正）：live task 与回调经 props
+ * 流入，视图内「props 优先、工厂 opts 兜底」（值为 `undefined` 视为未传 →
+ * 回落 opts/默认 noop——冒烟 `makeX(t, opts)({})` 旧形态由此保持兼容）。
+ * onBackToOutline / openSession 仅进度视图消费（其余视图传 undefined）。
+ */
+export interface PptsDetailProps {
+  task?: Record<string, unknown>
+  onUpdated?(next: unknown): void
+  onBack?(): void
+  onBackToOutline?(): void
+  openSession?(): void
+  [key: string]: unknown
+}
+
 /** 面板壳 bridges：api + 任务启动编排 createTask（+ 素材上传 uploadMaterial + 会话桥 sendToSession / openSession）。 */
 export interface PptsPanelBridges {
   /** 任务数据面（既有 api）：POST /super-ppts/api/<method>（tasks.list / tasks.get / …）。 */
@@ -333,13 +377,18 @@ export interface PptsPanelBridges {
  * - SP_VIEW_RECENT → makeRecentView（onOpen=openTask 真实打开 / onNewTask 回新建）；
  * - SP_VIEW_TASK → forcedSub（进度视图「返回修改大纲」覆盖）优先，否则
  *   routeSubView(active)，分发 makeOutlineReviewView / makeProgressView /
- *   makeResultView（三视图 onBack 回列表并 refreshTasks；onUpdated 换 active +
- *   清 forcedSub + patchTasks 同步列表条目）；activeErr 且无 active → 错误横幅
+ *   makeResultView——组件类型经 ensureDetailView(detailRef, sub, active.id,
+ *   make) 按 (sub|taskId) 缓存（实现后审查修正：防轮询 re-render remount），
+ *   live task/回调经 props 注入（见 PptsDetailProps；onBackToOutline/
+ *   openSession 仅 progress 传）；三视图 onBack 回列表并 refreshTasks；
+ *   onUpdated 换 active + 清 forcedSub + patchTasks 同步列表条目；
+ *   activeErr 且无 active → 错误横幅
  *   `sp-task-error`（文案键 taskOpenFailed）+ 返回最近按钮。
  * 轮询：active 且 isPollingStatus(active.status) 时注册 startTaskPolling(id,
  * onPollTick, { api })（3s 固定间隔，effect 卸载即 cancel 停）；tick 换 active +
  * 同步列表条目 + shouldClearForced(active, next) 时清 forcedSub。
- * 壳层状态：view / tasks / loadErr / active / activeErr / forcedSub / busyOpen。
+ * 壳层状态：view / tasks / loadErr / active / activeErr / forcedSub / busyOpen /
+ * detailRef（详情组件类型缓存槽）。
  */
 export function makePanelsView(
   t: (key: string, params?: Record<string, unknown>) => string,
@@ -631,9 +680,14 @@ export interface PptsOutlineTaskRecord {
  * 大纲确认视图选项（Plan 2b Task 3b 已交付；真实形态见 lib/client.js 的
  * makeOutlineReviewView）。api=数据面桥（缺省回 bundle 内 api）；
  * sendToSession=会话桥（确认成功后投递继续指令 / 修改指令投递给 Agent）；
- * onUpdated=确认/修改后的记录回写（壳层据此切视图/续轮询）；onBack=返回。
+ * onUpdated=确认/保存/重取后的记录回写（壳层据此切视图/续轮询）；onBack=返回。
  * initialPages / reviseText 为**仅测试注入**（stub React 无重渲染，
  * 冒烟经 options 构造未保存态与修改指令初值）。
+ * 优先级契约（实现后审查修正）：task/onUpdated/onBack 同时支持经组件 props
+ * 传入且**优先于** options（props 值为 undefined 视为未传 → 回落 opts）；
+ * 冒烟 `makeOutlineReviewView(t, opts)({})` 旧形态由该兜底保持兼容。dirty
+ * 基线 = 当前渲染 task.outline.pages 的派生值（无 useRef 手管）：保存成功 /
+ * 版本重取后经 onUpdated(record) 让宿主前移基线。api/sendToSession 仅工厂级。
  */
 export interface PptsOutlineOptions {
   task?: PptsOutlineTaskRecord
@@ -664,7 +718,7 @@ export interface PptsOutlineOptions {
 export function makeOutlineReviewView(
   t: (key: string, params?: Record<string, unknown>) => string,
   options: PptsOutlineOptions,
-): (props?: Record<string, unknown>) => unknown {
+): (props?: PptsDetailProps) => unknown {
   return function OutlineReview() { return null }
 }
 
@@ -722,6 +776,10 @@ export interface PptsProgressTaskRecord {
  * openSession=壳层会话桥（Task 6 接线，冒烟传 stub）；onBackToOutline=错误恢复
  * 区「返回修改大纲」。answerText 为**仅测试注入**（stub React 无重渲染，
  * 冒烟经 options 构造补充回答初值）。
+ * 优先级契约（实现后审查修正）：task/onUpdated/onBack/onBackToOutline/openSession
+ * 同时支持经组件 props 传入且**优先于** options（props 值为 undefined 视为
+ * 未传 → 回落 opts/默认 noop）；状态变体按**本次渲染的 task** 判定。
+ * api/sendToSession/answerText 仅工厂级。
  */
 export interface PptsProgressOptions {
   task?: PptsProgressTaskRecord
@@ -753,7 +811,7 @@ export interface PptsProgressOptions {
 export function makeProgressView(
   t: (key: string, params?: Record<string, unknown>) => string,
   options: PptsProgressOptions,
-): (props?: Record<string, unknown>) => unknown {
+): (props?: PptsDetailProps) => unknown {
   return function Progress() { return null }
 }
 
@@ -773,6 +831,10 @@ export interface PptsResultTaskRecord {
  * onUpdated=tasks.update 成功回执（building → 壳层路由进进度视图）。
  * continueText 为**仅测试注入**（stub React 无重渲染，冒烟经 options 构造
  * 继续修改草稿初值，与 reviseText/answerText 同法）。
+ * 优先级契约（实现后审查修正）：task/onUpdated/onBack 同时支持经组件 props
+ * 传入且**优先于** options（props 值为 undefined 视为未传 → 回落 opts/默认
+ * noop）；产物清单/摘要按**本次渲染的 task** 计算。api/sendToSession/
+ * continueText 仅工厂级。
  */
 export interface PptsResultOptions {
   task?: PptsResultTaskRecord
@@ -809,7 +871,7 @@ export function copyText(text: string, impl?: { writeText?(value: string): unkno
 export function makeResultView(
   t: (key: string, params?: Record<string, unknown>) => string,
   options: PptsResultOptions,
-): (props?: Record<string, unknown>) => unknown {
+): (props?: PptsDetailProps) => unknown {
   return function Result() { return null }
 }
 

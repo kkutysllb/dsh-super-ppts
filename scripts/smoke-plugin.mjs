@@ -920,6 +920,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['makeProgressView', 'makeProgressView'],                         // 生成进度视图(Plan 2b Task 4;六阶段时间线+恢复变体)
     ['makeResultView', 'makeResultView'],                             // 结果视图(Plan 2b Task 5;产物引用+继续修改)
     ['sendToSession', 'sendToSession'],                               // 壳层→视图的会话消息桥(Plan 2b Task 6;apply 绑 ctx)
+    ['ensureDetailView', 'ensureDetailView'],                         // 详情视图组件类型缓存(实现后审查修正;防轮询 remount;props 优先 opts 兜底)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -2478,11 +2479,9 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     check('壳层初始渲染不出现 sp-attention-hint（tasks=null → attentionEntries 空，提示行依赖列表数据）',
       byClass(panel, 'sp-attention-hint').length === 0)
 
-    // —— 分发/轮询接线的静态锚点（三工厂调用点 / startTaskPolling 调用点 / 任务态分发）——
-    check('壳层静态锚点：三详情视图工厂已接入分发（createElement 调用点，非定义行）',
-      clientSource.includes('React.createElement(makeOutlineReviewView(t,')
-      && clientSource.includes('React.createElement(makeProgressView(t,')
-      && clientSource.includes('React.createElement(makeResultView(t,'))
+    // —— 轮询/任务态接线的静态锚点。原「三工厂 createElement 调用点」锚点
+    //    由实现后审查修正块取代：内联工厂调用正是 remount 根因，分发必须
+    //    经 ensureDetailView 缓存组件类型（锚点见下方审查修正块）——
     check('壳层轮询锚点：详情 effect 用 isPollingStatus(active.status) 判定 + startTaskPolling(active.id 接线',
       clientSource.includes('startTaskPolling(active.id')
       && clientSource.includes('isPollingStatus(active.status)'))
@@ -2494,6 +2493,94 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   } catch (error) {
     // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
     check('Plan 2b Task 6 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
+}
+
+/* ═══ Plan 2b 实现后审查修正（Fix 1）：详情视图组件身份稳定（防轮询 remount）═══
+   真 React 按 element type 身份决定 unmount/remount：壳层分发若每次 render 内联
+   makeX(t, detail) 调工厂（工厂每次返回**新函数对象**=新类型），轮询 tick 的
+   setActive 一触发重渲染就把详情视图整个重建——大纲未保存编辑每 3s 被静默重置
+   （stub React 单渲染测不到，这是本块断言存在的理由）。修复两侧协同：
+   ① 三视图组件 props 优先、工厂 opts 兜底读 live task/回调（冒烟 `makeX(t,opts)({})`
+      旧形态零改动兼容）；② 壳层经模块级 ensureDetailView(cacheRef, sub, taskId, make)
+      按 (sub|taskId) 缓存组件类型。saveOnly/resync 的 dirty 基线从 useRef 手管改为
+      「task prop 的派生值」——保存/重取成功经 onUpdated(record) 让宿主前移基线。 */
+{
+  const H = loadedModule.__testHooks
+  const t = (key) => key
+  try {
+    // —— ensureDetailView：(sub|taskId) 稳定 → 同一组件类型对象、工厂只执行一次 ——
+    check('ensureDetailView: 同 (sub,id) 两次调用返回同一组件类型且工厂单次执行；sub/taskId 变化即重建', (() => {
+      let calls = 0
+      const make = () => { calls += 1; return function Cached() { return null } }
+      const ref = { current: null }
+      const a1 = H.ensureDetailView(ref, 'outline', 'k1', make)
+      const a2 = H.ensureDetailView(ref, 'outline', 'k1', make)
+      const afterA = calls // 复用则应仍为 1
+      const b1 = H.ensureDetailView(ref, 'progress', 'k1', make)
+      const afterB = calls // sub 变化 → 重建
+      const c1 = H.ensureDetailView(ref, 'progress', 'k2', make)
+      const c2 = H.ensureDetailView(ref, 'progress', 'k2', make)
+      return typeof a1 === 'function' && a1 === a2 && afterA === 1
+        && b1 !== a1 && afterB === 2 && c1 !== b1 && c1 === c2 && calls === 3
+    })())
+
+    // —— 三视图 props 优先 opts 兜底（宿主传 live props；未传 props 回落 opts）——
+    const detailTask = (over) => Object.assign({
+      id: 'k1', title: '标题-A', status: 'waiting-outline',
+      workspace: { id: 'ws1', name: 'w', path: '/p' },
+      brief: { topic: 'x', format: 'pptx' }, outlineVersion: 1,
+      outline: { version: 1, pages: [{ id: 'p1', title: '页面甲', bullets: [] }] },
+      materials: [], artifacts: [], events: [],
+    }, over)
+    const propsFirst = (makeFn, taskProps) => {
+      const Comp = makeFn(t, {
+        task: detailTask({}), api: () => Promise.resolve({}),
+        sendToSession: () => Promise.resolve('none'),
+        onUpdated: () => {}, onBack: () => {},
+      })
+      const withProps = treeText(renderTree(Comp({ task: detailTask(taskProps) })))
+      const withoutProps = treeText(renderTree(Comp({})))
+      return withProps.includes(taskProps.title) && !withProps.includes('标题-A') && withoutProps.includes('标题-A')
+    }
+    check('大纲视图 props.task 优先 opts.task（props 未传回落 opts：冒烟旧形态兼容）',
+      propsFirst(H.makeOutlineReviewView, { id: 'k2', title: '标题-B1' }))
+    check('进度视图 props.task 优先 opts.task（props task 变体/标题按 live 记录渲染）',
+      propsFirst(H.makeProgressView, { id: 'k2', title: '标题-B2', status: 'completed' }))
+    check('结果视图 props.task 优先 opts.task',
+      propsFirst(H.makeResultView, { id: 'k2', title: '标题-B3', status: 'completed' }))
+
+    // —— 壳层分发静态锚点（可破坏：恢复内联工厂/去掉缓存即 FAIL）——
+    check('壳层详情分发无内联工厂调用（防 remount）',
+      !/React\.createElement\(\s*make(OutlineReview|Progress|Result)View\(/.test(clientSource))
+    check('壳层经 ensureDetailView 缓存组件类型（三工厂在 make 回调内惰性创建）',
+      /ensureDetailView\(detailRef/.test(clientSource)
+      && clientSource.includes('makeOutlineReviewView(t,')
+      && clientSource.includes('makeProgressView(t,')
+      && clientSource.includes('makeResultView(t,'))
+
+    // —— saveOnly 行为改动：保存成功 → onUpdated 收到 tasks.outline 返回记录 ——
+    // （dirty 基线不再 useRef 手管：宿主 setActive → props task 前移 savedPages）
+    const saveOnlyResult = await (async () => {
+      let updated = null
+      const calls = []
+      const savedRecord = detailTask({
+        outlineVersion: 2,
+        outline: { version: 2, pages: [{ id: 'p1', title: '改过的标题', bullets: [] }] },
+      })
+      const Comp = H.makeOutlineReviewView(t, {
+        task: detailTask({}),
+        api: (m, b) => { calls.push({ m, b }); return Promise.resolve(savedRecord) },
+        initialPages: [{ id: 'p1', title: '改过的标题', bullets: [] }],
+        onUpdated: (next) => { updated = next },
+      })
+      const tree = renderTree(Comp({}))
+      await findElement(tree, (el) => classOf(el) === 'sp-outline-save').props.onClick()
+      return calls.some((c) => c.m === 'tasks.outline') && !!updated && updated.outlineVersion === 2
+    })()
+    check('点 sp-outline-save → tasks.outline 成功 → onUpdated 收到返回记录（基线经 props 前移）', saveOnlyResult)
+  } catch (error) {
+    check('Plan 2b 审查修正（详情视图身份）断言块无异常执行', false, String(error && error.message).slice(0, 160))
   }
 }
 
