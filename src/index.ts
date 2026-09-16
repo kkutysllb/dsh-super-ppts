@@ -33,7 +33,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { packageRoot } from './paths.js'
 import { registerPptsRoutes, type PptsWebServerFace } from './routes.js'
-import { pptsCheckTool, pptsRenderTool, pptsTemplatesTool, type DshToolDefinition } from './tools.js'
+import { pptsCheckTool, pptsRenderTool, pptsTaskTool, pptsTemplatesTool, type DshToolDefinition } from './tools.js'
 
 export { packageRoot }
 
@@ -118,6 +118,7 @@ export function apply(ctx: PluginContext, config: Config = {}): () => void {
     disposers.push(ctx.tools.register(pptsCheckTool))
     disposers.push(ctx.tools.register(pptsRenderTool))
     disposers.push(ctx.tools.register(pptsTemplatesTool))
+    disposers.push(ctx.tools.register(pptsTaskTool))
   }
   // 设置页通道：模板上传 + JSON 操作面（存储 ~/.dsh/super-ppts/）。
   // 上限默认 100 MB（PPTX 模板的宽松上限），cordis.yml patch 可调。

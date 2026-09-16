@@ -638,8 +638,8 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
 // + validateJsonSchemaValue——type 数组会让插件树加载失败、引擎无法启动），
 // 运行时不在时退回手写静态遍历。
 {
-  const { pptsCheckTool, pptsRenderTool, pptsTemplatesTool } = await import('../lib/tools.js')
-  const tools = [pptsCheckTool, pptsRenderTool, pptsTemplatesTool]
+  const { pptsCheckTool, pptsRenderTool, pptsTemplatesTool, pptsTaskTool } = await import('../lib/tools.js')
+  const tools = [pptsCheckTool, pptsRenderTool, pptsTemplatesTool, pptsTaskTool]
   let validator = null
   try {
     const dshTools = await import(RUNTIME_NODE_MODULES + '/@deepseek-ai/dsh-tools/lib/index.js')
@@ -682,6 +682,61 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
       walk(tool.output?.schema, tool.name + '.output.schema')
     }
     check('工具 schema 全部单一 type（手写遍历兜底）', violations.length === 0, violations.join('; ').slice(0, 200))
+  }
+}
+
+// ppts_task 状态桥行为：阶段上报 / 大纲提交即停 / 确认可见 / 产物登记 / 失败记录
+{
+  const { runTask, pptsTaskTool } = await import('../lib/tools.js')
+  const store = await import('../lib/tasks.js')
+  const task = store.createTask({
+    title: '工具任务',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+
+  const staged = runTask({ action: 'stage', taskId: task.id, stageKey: 'analyzing', stageIndex: 1, stageTotal: 6, detail: '读取素材' })
+  check('ppts_task stage 上报阶段并推进状态', staged.ok === true && store.loadTask(task.id)?.status === 'analyzing')
+
+  const outlined = runTask({ action: 'outline', taskId: task.id, pages: [{ title: '结论' }, { title: '指标' }] })
+  check('ppts_task outline 转等待确认并提示停下',
+    outlined.ok === true && outlined.status === 'waiting-outline' && /确认/.test(outlined.message))
+
+  const before = runTask({ action: 'get', taskId: task.id })
+  check('ppts_task get 反映未确认（版本 0）',
+    before.ok === true && before.status === 'waiting-outline' && before.confirmedOutlineVersion === 0)
+
+  store.confirmOutline(task.id, 1)
+  const after = runTask({ action: 'get', taskId: task.id })
+  check('ppts_task get 反映已确认版本', after.confirmedOutlineVersion === 1)
+
+  const artifact = runTask({ action: 'artifact', taskId: task.id, artifactType: 'pptx', artifactPath: '/tmp/deck.pptx' })
+  check('ppts_task artifact 登记产物',
+    artifact.ok === true && store.loadTask(task.id)?.artifacts[0]?.path === '/tmp/deck.pptx')
+
+  const needsInput = runTask({ action: 'needs-input', taskId: task.id, question: '利润下降口径？' })
+  check('ppts_task needs-input 转等待补充',
+    needsInput.ok === true && store.loadTask(task.id)?.status === 'needs-input')
+
+  const failed = runTask({ action: 'fail', taskId: task.id, stageKey: 'reviewing', reason: '渲染失败' })
+  // 注：fail 分支按计划先 appendEvent(reason) 再 setStatus('failed')，而 setStatus 自身会再压一条
+  // 「状态 → failed」——故 events.at(-1) 并非原因条目（计划文本此处按 events.at(-1) 断言会恒假）。
+  // 实现顺序为准，这里断言「原因以 kind=fail 落入事件流」。
+  check('ppts_task fail 记录失败状态与原因',
+    failed.ok === true && store.loadTask(task.id)?.status === 'failed'
+      && (store.loadTask(task.id)?.events ?? []).some(event => event.kind === 'fail' && /渲染失败/.test(event.text)))
+
+  check('ppts_task 未知任务 → ok:false', runTask({ action: 'get', taskId: 'nope-000000' }).ok === false)
+
+  // 输出值合规（运行时校验器可用时）
+  try {
+    const dshTools = await import(RUNTIME_NODE_MODULES + '/@deepseek-ai/dsh-tools/lib/index.js')
+    const violations = dshTools.validateJsonSchemaValue(pptsTaskTool.output.schema, runTask({ action: 'get', taskId: task.id }))
+    check('ppts_task 输出值合规（运行时校验器）',
+      violations === undefined || violations.length === 0,
+      Array.isArray(violations) ? violations.join('; ').slice(0, 200) : '')
+  } catch {
+    console.log('SKIP  ppts_task 输出值校验（运行时 dsh-tools 不可用）')
   }
 }
 

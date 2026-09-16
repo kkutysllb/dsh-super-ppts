@@ -24,6 +24,17 @@ import {
   type PptsPrefs,
   type TemplateRecord,
 } from './templates.js'
+import {
+  TaskStoreError,
+  addArtifact,
+  appendEvent,
+  requireTask,
+  saveOutline,
+  setStatus,
+  updateTask,
+  type OutlinePage,
+  type TaskStatus,
+} from './tasks.js'
 
 export { packageRoot }
 
@@ -301,4 +312,185 @@ export const pptsTemplatesTool: DshToolDefinition = {
   },
   timeoutMs: 10_000,
   execute: async (args: PptsTemplatesParams) => runTemplates(args),
+}
+
+/* ── ppts_task：演示任务状态桥（面板 Agent 之间唯一的显式状态通道） ──
+ * 面板创建任务后把 taskId 写进 Brief，Agent 必须经本工具上报阶段与大纲；
+ * 提交大纲后任务转 waiting-outline 并「停下等确认」——这是防止高成本生成
+ * 在结构未确认前启动的闸门。用户确认后，面板以同一会话提交继续指令，
+ * Agent 用 action=get 读到 confirmedOutlineVersion 后继续生成。 */
+
+export interface PptsTaskParams {
+  action: 'stage' | 'outline' | 'artifact' | 'needs-input' | 'fail' | 'get'
+  /** 任务 id（由工作台创建任务时写入 Brief 的「任务 ID」）。 */
+  taskId: string
+  /** action=stage：阶段键（analyzing / planning / building / reviewing）。 */
+  stageKey?: string
+  stageIndex?: number
+  stageTotal?: number
+  detail?: string
+  /** action=outline：页面结构（标题必填，其余可选）。 */
+  pages?: OutlinePage[]
+  /** action=artifact：产物类型与路径。 */
+  artifactType?: 'pptx' | 'pdf' | 'html'
+  artifactPath?: string
+  /** action=needs-input：需要用户回答的具体问题。 */
+  question?: string
+  /** action=fail：失败阶段与原因。 */
+  reason?: string
+}
+
+export interface PptsTaskResult {
+  ok: boolean
+  message: string
+  taskId?: string
+  status?: TaskStatus
+  outlineVersion?: number
+  confirmedOutlineVersion?: number
+  pageCount?: number
+}
+
+/** 阶段键 → 任务状态（面板据此渲染阶段时间线）。 */
+const STAGE_STATUS: Record<string, TaskStatus> = {
+  analyzing: 'analyzing',
+  planning: 'analyzing',
+  building: 'building',
+  reviewing: 'reviewing',
+}
+
+/** 任务状态桥：Agent 上报阶段/大纲/产物/补充/失败，或读取当前确认状态。 */
+export function runTask(params: PptsTaskParams): PptsTaskResult {
+  const taskId = String(params?.taskId ?? '').trim()
+  if (taskId === '') return { ok: false, message: '缺少 taskId（取工作台 Brief 中的「任务 ID」）' }
+  try {
+    const task = requireTask(taskId)
+    switch (params.action) {
+      case 'stage': {
+        const key = String(params.stageKey ?? '').trim()
+        if (key === '') return { ok: false, message: 'action=stage 需要 stageKey' }
+        const next = updateTask(taskId, {
+          stage: {
+            key,
+            index: Number(params.stageIndex ?? 0),
+            total: Number(params.stageTotal ?? 0),
+            detail: params.detail === undefined ? undefined : String(params.detail),
+          },
+        })
+        const mapped = STAGE_STATUS[key]
+        const withStatus = mapped === undefined ? next : setStatus(taskId, mapped)
+        return {
+          ok: true,
+          message: `阶段已上报：${key}`,
+          taskId,
+          status: withStatus.status,
+          outlineVersion: withStatus.outlineVersion,
+          confirmedOutlineVersion: withStatus.confirmedOutlineVersion ?? 0,
+        }
+      }
+      case 'outline': {
+        const saved = saveOutline(taskId, Array.isArray(params.pages) ? params.pages : [])
+        return {
+          ok: true,
+          message: `大纲已记录（v${saved.outlineVersion}，${saved.outline?.pages.length ?? 0} 页）。`
+            + '请立即停止后续生成，等待用户在工作台确认大纲后再继续（不要先生成 PPTX/HTML）。',
+          taskId,
+          status: saved.status,
+          outlineVersion: saved.outlineVersion,
+          confirmedOutlineVersion: saved.confirmedOutlineVersion ?? 0,
+          pageCount: saved.outline?.pages.length ?? 0,
+        }
+      }
+      case 'artifact': {
+        const type = params.artifactType
+        const path = String(params.artifactPath ?? '').trim()
+        if (type !== 'pptx' && type !== 'pdf' && type !== 'html') {
+          return { ok: false, message: 'action=artifact 需要 artifactType（pptx / pdf / html）' }
+        }
+        if (path === '') return { ok: false, message: 'action=artifact 需要 artifactPath' }
+        const saved = addArtifact(taskId, { type, path, status: 'ready' })
+        return { ok: true, message: `产物已登记：${type} → ${path}`, taskId, status: saved.status }
+      }
+      case 'needs-input': {
+        const question = String(params.question ?? '').trim()
+        if (question === '') return { ok: false, message: 'action=needs-input 需要 question' }
+        appendEvent(taskId, 'needs-input', question)
+        const saved = setStatus(taskId, 'needs-input')
+        return { ok: true, message: `已请求用户补充：${question}`, taskId, status: saved.status }
+      }
+      case 'fail': {
+        const reason = String(params.reason ?? '').trim()
+        if (reason === '') return { ok: false, message: 'action=fail 需要 reason' }
+        appendEvent(taskId, 'fail', reason)
+        const failed = setStatus(taskId, 'failed')
+        return { ok: true, message: `已记录失败：${reason}（可重试当前阶段）`, taskId, status: failed.status }
+      }
+      case 'get':
+      default:
+        return {
+          ok: true,
+          message: task.status === 'waiting-outline'
+            ? '大纲尚未确认：请等待用户在工作台确认后再继续生成。'
+            : `任务状态：${task.status}`,
+          taskId,
+          status: task.status,
+          outlineVersion: task.outlineVersion,
+          confirmedOutlineVersion: task.confirmedOutlineVersion ?? 0,
+          pageCount: task.outline?.pages.length ?? 0,
+        }
+    }
+  } catch (error) {
+    const message = error instanceof TaskStoreError ? error.message : String(error)
+    return { ok: false, message: `任务状态桥失败：${message}` }
+  }
+}
+
+export const pptsTaskTool: DshToolDefinition = {
+  name: 'ppts_task',
+  description:
+    '演示任务状态桥（工作台创建的任务专用）。当 Brief 中带有「任务 ID：<id>」时必须使用本工具：' +
+    'action=stage 上报阶段（analyzing/planning/building/reviewing）；' +
+    'action=outline 提交页面大纲（{title,purpose,bullets,pageType}[]）——提交后任务转入「等待确认大纲」，' +
+    '你必须立即停止后续生成，等用户在工作台确认；' +
+    'action=get 读取当前状态与 confirmedOutlineVersion（收到「大纲已确认」消息后可先用它核对）；' +
+    'action=artifact 登记产物路径；action=needs-input 请求用户补充信息；action=fail 记录失败原因与可恢复动作。',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'string',
+        enum: ['stage', 'outline', 'artifact', 'needs-input', 'fail', 'get'],
+        description: 'stage=上报阶段；outline=提交大纲并停下等确认；artifact=登记产物；needs-input=请求补充；fail=记录失败；get=读取状态',
+      },
+      taskId: { type: 'string', description: '任务 id（Brief 中的「任务 ID」）' },
+      stageKey: { type: 'string', description: 'action=stage：阶段键（analyzing / planning / building / reviewing）' },
+      stageIndex: { type: 'number', description: 'action=stage：当前阶段序号（从 1 起）' },
+      stageTotal: { type: 'number', description: 'action=stage：阶段总数' },
+      detail: { type: 'string', description: 'action=stage：当前阶段的具体说明（面板会展示）' },
+      pages: { type: 'array', items: { type: 'object' }, description: 'action=outline：页面数组，每页 {id?,title,purpose?,bullets?,pageType?}' },
+      artifactType: { type: 'string', enum: ['pptx', 'pdf', 'html'], description: 'action=artifact：产物类型' },
+      artifactPath: { type: 'string', description: 'action=artifact：产物绝对路径' },
+      question: { type: 'string', description: 'action=needs-input：需要用户回答的问题' },
+      reason: { type: 'string', description: 'action=fail：失败原因（面板展示并可重试）' },
+    },
+    required: ['action', 'taskId'],
+    additionalProperties: false,
+  },
+  output: {
+    schema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        message: { type: 'string' },
+        taskId: { type: 'string' },
+        status: { type: 'string' },
+        outlineVersion: { type: 'number' },
+        confirmedOutlineVersion: { type: 'number' },
+        pageCount: { type: 'number' },
+      },
+      required: ['ok', 'message'],
+    },
+    render: jsonRender,
+  },
+  timeoutMs: 10_000,
+  execute: async (args: PptsTaskParams) => runTask(args),
 }
