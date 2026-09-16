@@ -40,8 +40,10 @@ function check(name, condition, detail = '') {
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'ppts-smoke-'))
 process.env.HOME = fakeHome
-// 关键隔离：本机 shell 可能带着全局 DSH_HOME（如 KCoder 桌面端 ~/.kcoder）。
-// 存储根现在跟随 $DSH_HOME，不先删掉它冒烟就会读写真实用户数据（教训：2026-09-16）。
+// 关键隔离：本机 shell 可能带着全局 QILIN_HOME/DSH_HOME（如 KCoder 桌面端
+// ~/.kcoder）。存储根跟随宿主 home，不先删掉它们冒烟就会读写真实用户数据
+// （教训：2026-09-16）。
+delete process.env.QILIN_HOME
 delete process.env.DSH_HOME
 
 const { registerPptsRoutes } = await import('../lib/routes.js')
@@ -1093,7 +1095,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   }
 }
 
-/* ═══ 4.5 数据根解析（$DSH_HOME）与存量自愈 ═══ */
+/* ═══ 4.5 数据根解析（$QILIN_HOME → $DSH_HOME → ~/.dsh）与存量自愈 ═══ */
 
 {
   // 默认解析：HOME 已指向 fakeHome 且 DSH_HOME 已删除 → ~/.dsh/super-ppts
@@ -1108,6 +1110,16 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     'console.log(m.STORE_ROOT)',
   ], { env: { ...process.env, DSH_HOME: alt }, encoding: 'utf8' })
   check('DSH_HOME 覆盖数据根（KCoder 桌面端形态）', child.trim() === join(alt, 'super-ppts'), child.trim())
+
+  // QILIN_HOME 优先于 DSH_HOME（QiLin 形态：启动器注入 QILIN_HOME 并把
+  // DSH_HOME 钉定到同一处；两者同时存在时以 QILIN_HOME 为准）
+  const qilinAlt = mkdtempSync(join(tmpdir(), 'ppts-qilin-home-'))
+  const childQilin = execFileSync(process.execPath, [
+    '--input-type=module', '-e',
+    'const m = await import(' + JSON.stringify('file://' + join(packageRoot, 'lib/templates.js')) + ');\n' +
+    'console.log(m.STORE_ROOT)',
+  ], { env: { ...process.env, QILIN_HOME: qilinAlt, DSH_HOME: alt }, encoding: 'utf8' })
+  check('QILIN_HOME 优先于 DSH_HOME（QiLin 注入形态）', childQilin.trim() === join(qilinAlt, 'super-ppts'), childQilin.trim())
 
   // 旧存储根迁移：HOME=legacyHome（含 .dsh/super-ppts 数据）+ DSH_HOME=新根 →
   // loadRegistry 把清单与二进制搬进新根，并把记录 file 按 id 重锚
@@ -2695,6 +2707,66 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
 
 /** 伪 File：client 只用到 name 与流式 body，测试里给最小替身。 */
 function BlobContent(name, size) { this.name = name; this.size = size }
+
+/* ═══ Plan 2b 后续（1.4.1）：样式注入三通道 + 拦截自检 ═══ */
+{
+  const H = loadedModule.__testHooks
+  check('样式注入钩子导出', typeof H.ensureStyles === 'function' && typeof H.stylesBlocked === 'function')
+
+  // —— fake document：adopted 通道不可用（无 CSSStyleSheet）→ 标签通道 → 拦截检测 ——
+  const createdTags = []
+  const blockedDoc = {
+    getElementById: () => null,
+    createElement: () => ({ attrs: {}, textContent: '' }),
+    head: { appendChild: (el) => { createdTags.push(el) } },
+    querySelector: () => null,
+    get styleSheets() { return createdTags.map((el) => ({ ownerNode: el, cssRules: [] })) },
+  }
+  const prevDoc = sandboxGlobal.document
+  sandboxGlobal.document = blockedDoc
+  try {
+    H.ensureStyles()
+    check('无 adopted API：标签通道注入 + 严格 CSP 下判定拦截（cssRules=0）',
+      createdTags.length === 1 && createdTags[0].id === 'dsh-super-ppts-styles'
+      && createdTags[0].textContent.length > 1000 && H.stylesBlocked() === true)
+    check('拦截态在面板渲染显性警告条', (() => {
+      const panel = H.MakePanelsView((k) => k, {})({})
+      return !!byClass(panel, 'sp-styles-warning').length
+        && treeText(panel).includes('stylesBlockedWarning')
+    })())
+  } finally { sandboxGlobal.document = prevDoc }
+
+  // —— 正常宿主：adopted + 标签双通道、nonce 拷贝、幂等 ——
+  const adopted = []
+  class FakeStyleSheet { replaceSync(text) { this.text = text } }
+  const nonceMeta = { nonce: 'abc123' }
+  const okTags = []
+  const byId = {}
+  const okDoc = {
+    getElementById: (id) => byId[id] || null,
+    createElement: () => { const el = { attrs: {}, textContent: '', setAttribute(k, v) { this.attrs[k] = v } }; return el },
+    head: { appendChild: (el) => { if (el && el.id) byId[el.id] = el; okTags.push(el) } },
+    querySelector: (sel) => (String(sel).includes('csp-nonce') ? nonceMeta : null),
+    adoptedStyleSheets: adopted,
+    styleSheets: [],
+  }
+  sandboxGlobal.CSSStyleSheet = FakeStyleSheet
+  sandboxGlobal.document = okDoc
+  try {
+    H.ensureStyles()
+    H.ensureStyles()
+    // 注意：bundle 内 `document.adoptedStyleSheets = …` 是整体替换属性——
+    // 从 fakeDoc 上读**当前**数组，而不是断言 host 侧旧引用
+    const cur = okDoc.adoptedStyleSheets
+    check('adopted 通道注入且幂等（两次调用仅一张表）',
+      Array.isArray(cur) && cur.length === 1 && cur[0].__dshSuperPpts === true && cur[0].text.length > 1000)
+    check('标签通道拷贝 csp-nonce 且幂等', okTags.length === 1 && okTags[0].attrs.nonce === 'abc123')
+    check('未误报拦截（adopted 成功即算生效）', H.stylesBlocked() === false)
+  } finally {
+    delete sandboxGlobal.document
+    delete sandboxGlobal.CSSStyleSheet
+  }
+}
 
 /* ═══ 清理与结论 ═══ */
 

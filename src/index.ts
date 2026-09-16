@@ -31,8 +31,9 @@
  */
 import { rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { packageRoot } from './paths.js'
+import { DSH_HOME } from './templates.js'
 import { registerPptsRoutes, type PptsWebServerFace } from './routes.js'
 import { pptsCheckTool, pptsRenderTool, pptsTaskTool, pptsTemplatesTool, type DshToolDefinition } from './tools.js'
 
@@ -75,14 +76,12 @@ interface PluginContext {
 
 /**
  * 旧预设候选位（去重）：历史版本写死 ~/.dsh/.agent-presets/super-ppts；
- * 同一段历史代码在 $DSH_HOME 部署下实际落位 <DSH_HOME>/.agent-presets/super-ppts。
+ * 同一段历史代码在宿主 home 部署下实际落位 <宿主 home>/.agent-presets/super-ppts。
  * 两处都清（幂等；与 templates.ts 同一套 home 解析口径）。
  */
 function legacyPresetDirs(): string[] {
-  const fromEnv = process.env.DSH_HOME
-  const dshHome = fromEnv !== undefined && fromEnv.trim().length > 0 ? resolve(fromEnv) : join(homedir(), '.dsh')
   const candidates = new Set<string>([
-    join(dshHome, '.agent-presets', 'super-ppts'),
+    join(DSH_HOME, '.agent-presets', 'super-ppts'),
     join(homedir(), '.dsh', '.agent-presets', 'super-ppts'),
   ])
   return [...candidates]

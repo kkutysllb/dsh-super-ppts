@@ -129,7 +129,7 @@ to "use my template <name>".
 
 ## 演示任务数据面 / Presentation task surface
 
-侧边栏「演示文稿」任务面板的数据落在 `<DSH_HOME>/super-ppts/tasks/`：
+侧边栏「演示文稿」任务面板的数据落在 `<QILIN_HOME|DSH_HOME>/super-ppts/tasks/`：
 `index.json` 存列表所需轻量字段（**无损缓存**——磁盘任务目录才是真源，缺失 /
 损坏 / 条目不足时自动重建），`<taskId>/task.json` 存详情（含事件流与产物引用），
 `<taskId>/outline-vN.json` 存每次大纲版本，`<taskId>/materials/` 存本次素材。
@@ -150,7 +150,7 @@ host 侧 HTTP 面（沿用 `/super-ppts` 信任围栏与 `{ok,value}` 信封）�
 | `POST /super-ppts/api/tasks.materialStatus` | 回报素材读取结果（ready / error） |
 | `POST /super-ppts/tasks/upload?taskId=&name=` | 素材流式上传落盘到任务目录 |
 
-Task data lives under `<DSH_HOME>/super-ppts/tasks/`; the routes above mirror the
+Task data lives under `<QILIN_HOME|DSH_HOME>/super-ppts/tasks/`; the routes above mirror the
 template store's trust fence and envelope conventions.
 
 ## 环境要求 / Requirements

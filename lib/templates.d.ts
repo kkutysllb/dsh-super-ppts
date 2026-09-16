@@ -1,7 +1,8 @@
 /**
- * DSH home 解析（零依赖复刻宿主 dsh-home-paths 的取值优先级）：
- * `$DSH_HOME`（非空白）→ `~/.dsh`。KCoder 桌面端把 DSH_HOME 指到
- * ~/.kcoder，CLI 默认 ~/.dsh——插件数据必须跟随宿主 home，不能写死。
+ * 宿主 home 解析（零依赖复刻宿主 home-paths 的取值优先级）：
+ * `$QILIN_HOME`（非空白）→ `$DSH_HOME`（非空白）→ `~/.dsh`。QiLin 注入
+ * QILIN_HOME 并把 DSH_HOME 钉定到同一处，DSH 只注入 DSH_HOME，KCoder
+ * 桌面端把 DSH_HOME 指到 ~/.kcoder——插件数据必须跟随宿主 home，不能写死。
  */
 export declare const DSH_HOME: string;
 /** 存储根（模板目录与清单的父目录）。 */
