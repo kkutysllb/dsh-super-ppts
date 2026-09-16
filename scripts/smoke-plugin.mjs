@@ -675,15 +675,72 @@ check('disposer 后路由已注销', routes.size === 0)
 
 const clientSource = await readFile(join(packageRoot, 'lib', 'client.js'), 'utf8')
 
-// stub React：只覆盖 client.js 用到的 createElement + hooks
-function stubElement(type, props, ...children) {
-  return { $$el: true, type, props: props ?? {}, children }
+/* ── client 元素树助手（无 DOM：断言遍历 stub React 产出的树） ── */
+
+/** 深度优先收集全部元素节点（含根）。 */
+function collectElements(node, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) { for (const item of node) collectElements(item, out); return out }
+  if (node.$$el !== true) return out
+  out.push(node)
+  for (const child of node.children ?? []) collectElements(child, out)
+  return out
 }
-const hookLog = { effects: [] }
+
+/** 取元素的 className（client 用 className 标注可断言的结构）。 */
+function classOf(element) {
+  return String(element?.props?.className ?? '')
+}
+
+/** 按 className 子串筛选元素。 */
+function byClass(tree, fragment) {
+  return collectElements(tree).filter(element => classOf(element).includes(fragment))
+}
+
+/** 取渲染树中的全部文本内容（用于断言文案在场）。 */
+function textOf(node, out = []) {
+  if (node === null || node === undefined) return out
+  if (typeof node === 'string' || typeof node === 'number') { out.push(String(node)); return out }
+  if (Array.isArray(node)) { for (const item of node) textOf(item, out); return out }
+  if (node.$$el === true) { for (const child of node.children ?? []) textOf(child, out) }
+  return out
+}
+
+function treeText(tree) { return textOf(tree).join('') }
+
+/** 按标签名筛选元素（type 可能是字符串标签或函数组件）。 */
+function byTag(tree, tag) {
+  return collectElements(tree).filter(element => element.type === tag)
+}
+
+/** 找到第一个满足断言的元素。 */
+function findElement(tree, predicate) {
+  return collectElements(tree).find(predicate)
+}
+
+// stub React：覆盖 client.js 用到的 createElement + hooks。
+// useState 支持函数式更新（client 的列表改写会用到）；useEffect 记录 fn 以便断言副作用注册。
+const hookLog = { effects: [], memos: [] }
 const stubReact = {
-  createElement: stubElement,
-  useState(initial) { const s = { value: initial }; return [s.value, v => { s.value = v }] },
+  createElement(type, props, ...children) {
+    const flat = []
+    // React 语义：嵌套数组要摊平，null/false 子节点要丢弃——断言遍历依赖这一点
+    const push = (value) => {
+      if (Array.isArray(value)) { for (const item of value) push(item); return }
+      if (value === null || value === undefined || value === false || value === true) return
+      flat.push(value)
+    }
+    for (const child of children) push(child)
+    return { $$el: true, type, props: props ?? {}, children: flat }
+  },
+  useState(initial) {
+    const state = { value: typeof initial === 'function' ? initial() : initial }
+    return [state.value, (next) => {
+      state.value = typeof next === 'function' ? next(state.value) : next
+    }]
+  },
   useEffect(fn) { hookLog.effects.push(fn) },
+  useMemo(fn) { hookLog.memos.push(fn); return fn() },
   useCallback(fn) { return fn },
   useRef(initial) { return { current: initial } },
 }
