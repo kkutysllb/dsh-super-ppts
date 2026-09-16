@@ -214,11 +214,16 @@ export function buildPptsApiHandlers(): Record<string, (payload: unknown) => unk
       if (brief === null || typeof brief !== 'object') {
         throw new PptsRouteError('bad-request', 'missing or invalid "brief"')
       }
+      // workspace 与 brief 同等对待：兜底成空串 id 会让该任务既被 tasks.list 的
+      // workspaceId 过滤拒绝、又无法经 UpdateTaskPatch（无 workspace 键）补救。
       const workspace = record?.workspace
+      if (workspace === null || typeof workspace !== 'object') {
+        throw new PptsRouteError('bad-request', 'missing or invalid "workspace"')
+      }
       return createTask({
         title: requireString(payload, 'title'),
         brief: brief as TaskBrief,
-        workspace: (workspace !== null && typeof workspace === 'object' ? workspace : { id: '', name: '', path: '' }) as TaskWorkspace,
+        workspace: workspace as TaskWorkspace,
       })
     },
     'tasks.update': (payload) => {

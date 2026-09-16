@@ -438,6 +438,12 @@ const tasksMod = await import('../lib/tasks.js')
   const badCreate = await callApi('tasks.create', { title: '缺 brief' })
   check('tasks.create 缺 brief → 400', badCreate.status === 400)
 
+  // workspace 不再兜底空串 id（否则该任务过滤不到也修不了）→ 与 brief 同款 400
+  const badWorkspace = await callApi('tasks.create', { title: '缺 workspace', brief: { topic: 't', format: 'pptx' } })
+  check('tasks.create 缺 workspace → 400 bad-request',
+    badWorkspace.status === 400 && badWorkspace.json.error?.code === 'bad-request',
+    `status=${badWorkspace.status} code=${badWorkspace.json.error?.code}`)
+
   const outlined = await callApi('tasks.outline', { id, pages: [{ title: 'A' }, { title: 'B' }] })
   check('tasks.outline 保存并转等待确认', outlined.json.ok && outlined.json.value.status === 'waiting-outline')
 
@@ -461,13 +467,16 @@ const tasksMod = await import('../lib/tasks.js')
   })
   const id = created.json.value.id
 
-  async function callMaterialUpload(url, body) {
+  // method/host 可覆盖：本路由的信任围栏与方法守卫要靠这里反向验证（围栏或守卫
+  // 被漏拷时冒烟必须变红）。body 传 null 即空 async iterator——405/403 分支不消费
+  // 请求体，无需也不能喂载荷（避免挂起）。
+  async function callMaterialUpload(url, body, { method = 'POST', host = '127.0.0.1:60864' } = {}) {
     const handler = routes.get('/super-ppts/tasks/upload')
     const req = {
-      method: 'POST',
+      method,
       url,
-      headers: { host: '127.0.0.1:60864' },
-      async *[Symbol.asyncIterator]() { yield body },
+      headers: { host },
+      async *[Symbol.asyncIterator]() { if (body !== null) yield body },
     }
     let resolveRes
     const pending = new Promise(resolve => { resolveRes = resolve })
@@ -481,6 +490,18 @@ const tasksMod = await import('../lib/tasks.js')
   }
 
   check('素材上传路由已注册', typeof routes.get('/super-ppts/tasks/upload') === 'function')
+
+  // 信任围栏：非 loopback Host 一律 403（与 /super-ppts/api 同款 fenceRequest）
+  const fenced = await callMaterialUpload('/super-ppts/tasks/upload?taskId=x&name=x.txt', null, { host: 'evil.example' })
+  check('素材路由围栏拒绝非 loopback Host（403 forbidden）',
+    fenced.status === 403 && fenced.json.error?.code === 'forbidden',
+    `status=${fenced.status} code=${fenced.json.error?.code}`)
+
+  // 方法守卫：非 POST → 405（与 /super-ppts/api、/super-ppts/upload 同款）
+  const wrongMethod = await callMaterialUpload('/super-ppts/tasks/upload?taskId=x&name=x.txt', null, { method: 'GET' })
+  check('素材路由非 POST → 405 method-error',
+    wrongMethod.status === 405 && wrongMethod.json.error?.code === 'method-error',
+    `status=${wrongMethod.status} code=${wrongMethod.json.error?.code}`)
 
   const uploaded = await callMaterialUpload(
     '/super-ppts/tasks/upload?taskId=' + encodeURIComponent(id) + '&name=' + encodeURIComponent('数据.xlsx'),
