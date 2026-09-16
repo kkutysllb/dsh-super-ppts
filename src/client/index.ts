@@ -30,8 +30,8 @@
  *    makePanelsView 产出的**单列**任务工作区——顶部两个轻量视图切换
  *    （[新建任务][最近任务]）+ 视图分发 + 共享任务列表状态。视图是
  *    「工厂返回组件」形态（makeNewTaskView / makeRecentView /
- *    makeTemplatePicker），容器类名由壳层随元素下发
- *    （sp-view-new-task / sp-view-recent）。壳层宽度与滚动归宿主：
+ *    makeTemplatePicker），视图根**自持**容器类名
+ *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动归宿主：
  *    **不自建**侧边栏 / 右侧固定栏 / 全屏容器 / 100vw / 100vh。
  *    文件内分层：SP_* 常量 → api/uploadMaterial/sendToChatV3 →
  *    makePanelsView（壳）→ 各视图工厂；测试钩子见 bundle 末尾
@@ -117,7 +117,7 @@ export function registerSettingsNavIcon(label: () => string): () => void {
 export const SP_VIEW_NEW = 'new-task'
 export const SP_VIEW_RECENT = 'recent'
 
-/* 视图容器类名契约（壳层随元素下发、视图根沿用，不产生多余包裹层）：
+/* 视图容器类名契约（视图根自持、壳层只传 props，不产生多余包裹层）：
  * 新建任务 → 'sp-view-new-task'；最近任务 → 'sp-view-recent'。 */
 
 /**

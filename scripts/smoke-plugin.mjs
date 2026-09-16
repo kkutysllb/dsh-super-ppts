@@ -718,6 +718,43 @@ function findElement(tree, predicate) {
   return collectElements(tree).find(predicate)
 }
 
+/** renderTree 递归深度上限（防御组件自引用：stub 无 reconciler，不会有 React 的报错兜底）。 */
+const RENDER_DEPTH_LIMIT = 32
+
+/**
+ * 递归渲染函数型元素（stub React 没有 reconciler，需要显式展开函数组件）。
+ * 语义：
+ * - type 是函数 → 调用它（传 props），对返回值继续展开；
+ * - type 是字符串（div/button/span/textarea/input…）→ 保留为宿主元素，对其 children 继续展开；
+ * - 其它（null/undefined/布尔/字符串/数字）→ 原样返回；
+ * - 防无限递归：用 depth 限制（默认 32），超限抛出可读错误。
+ * 展开后返回的树可以被既有助手（byClass / treeText 等）直接遍历。
+ *
+ * 纯函数：不修改入参（宿主元素按浅拷贝重建，children 递归替换）。
+ * 函数组件只传 props（stub 无 context，第二参数恒为 undefined）。
+ */
+function renderTree(node, depth = 0) {
+  if (depth > RENDER_DEPTH_LIMIT) throw new Error('renderTree 递归过深（可能是组件自引用）')
+  if (node === null || node === undefined) return node
+  if (typeof node === 'function') {
+    // 裸函数组件（等价 React <Comp />，无元素包裹）：props 取空对象，仍只传一个参数
+    return renderTree(node({}, undefined), depth + 1)
+  }
+  if (typeof node !== 'object') return node // 字符串 / 数字 / 布尔 → 原样返回
+  if (Array.isArray(node)) return node.map(item => renderTree(item, depth + 1))
+  if (node.$$el !== true) return node // 非元素对象（style / 普通数据）→ 原样返回
+  if (typeof node.type === 'function') {
+    // 函数组件：只传 props，第二参数（context）传 undefined
+    return renderTree(node.type(node.props ?? {}, undefined), depth + 1)
+  }
+  // 宿主元素（type 为字符串标签；未知 type 也按宿主处理，不调用）→ 保留元素，递归展开 children
+  return { ...node, children: (node.children ?? []).map(child => renderTree(child, depth + 1)) }
+}
+
+/** renderTree + byClass 的组合（断言里最常用）。 */
+function renderedByClass(tree, fragment) { return byClass(renderTree(tree), fragment) }
+function renderedText(tree) { return treeText(renderTree(tree)) }
+
 // stub React：覆盖 client.js 用到的 createElement + hooks。
 // useState 支持函数式更新（client 的列表改写会用到）；useEffect 记录 fn 以便断言副作用注册。
 const hookLog = { effects: [], memos: [] }
@@ -1159,13 +1196,15 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   const panel = registrations.find(r => r.options.name === 'main')
   check('client 注册 main keyed 面板', !!panel && panel.options.key === 'super-ppts-panel')
   const tree = panel.component({ useWorkspaces: (selector) => selector({ items: [], phase: 'ready' }) })
+  // 断言走渲染入口：stub React 不调用函数组件，子组件内部结构（sp-tabs / 视图根类名）
+  // 只有先 renderTree 展开才可见。
   check('面板壳渲染出视图切换（新建任务 / 最近任务）',
-    byClass(tree, 'sp-tabs').length === 1
-      && treeText(byClass(tree, 'sp-tabs')[0]).includes('newTask')
-      && treeText(byClass(tree, 'sp-tabs')[0]).includes('recent'))
-  check('默认落在新建任务视图', byClass(tree, 'sp-view-new-task').length === 1)
+    renderedByClass(tree, 'sp-tabs').length === 1
+      && renderedText(renderedByClass(tree, 'sp-tabs')[0]).includes('newTask')
+      && renderedText(renderedByClass(tree, 'sp-tabs')[0]).includes('recent'))
+  check('默认落在新建任务视图', renderedByClass(tree, 'sp-view-new-task').length === 1)
   check('面板壳不存在嵌套自建侧边栏/全屏容器',
-    byClass(tree, 'sp-sidebar').length === 0 && byClass(tree, 'sp-fullscreen').length === 0)
+    renderedByClass(tree, 'sp-sidebar').length === 0 && renderedByClass(tree, 'sp-fullscreen').length === 0)
 }
 
 /* ═══ 清理与结论 ═══ */
