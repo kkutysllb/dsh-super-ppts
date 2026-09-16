@@ -1197,6 +1197,19 @@ git commit -m "feat(host): task API surface + material upload route"
 - Modify: `src/index.ts`
 - Test: `scripts/smoke-plugin.mjs`
 
+> **⚠️ 实现后收尾（2026-09-16，并入 Task 5 一起做）**
+>
+> 1. **`fail` 分支的事件顺序**：原计划的断言假定「失败原因」是最后一条事件，但原计划的实现顺序是
+>    `appendEvent(reason)` → `setStatus('failed')`，而 `setStatus` 自身会再压一条「状态 → failed」，
+>    导致原因不是最后一条（计划自相矛盾）。**决定改实现对齐断言**：`fail` 分支改为先
+>    `setStatus('failed')` 再 `appendEvent(reason)`，使「失败原因」成为最后一条事件
+>    （面板「最近事件」直接显示原因，比显示状态迁移更有用），并把冒烟断言恢复为
+>    原计划形态（`events.at(-1).text` 含原因）。
+> 2. **`src/tools.ts` 文件头注释仍是「工具面刻意收敛为 3 个」且只列 3 个工具**——现已有 4 个，
+>    随 Task 5 一并更新。
+>
+> 两处均由 Task 5 的派发范围承接（Task 5 本就同时改 `src/tools.ts` 与 `src/index.ts`）。
+
 - [ ] **Step 1: 写失败测试**
 
 在 `scripts/smoke-plugin.mjs` 中，把这一行（约 326 行）：
