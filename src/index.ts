@@ -30,7 +30,7 @@
  */
 import { rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { packageRoot } from './paths.js'
 import { registerPptsRoutes, type PptsWebServerFace } from './routes.js'
 import { pptsCheckTool, pptsRenderTool, pptsTemplatesTool, type DshToolDefinition } from './tools.js'
@@ -72,12 +72,29 @@ interface PluginContext {
   get(name: string): unknown
 }
 
+/**
+ * 旧预设候选位（去重）：历史版本写死 ~/.dsh/.agent-presets/super-ppts；
+ * 同一段历史代码在 $DSH_HOME 部署下实际落位 <DSH_HOME>/.agent-presets/super-ppts。
+ * 两处都清（幂等；与 templates.ts 同一套 home 解析口径）。
+ */
+function legacyPresetDirs(): string[] {
+  const fromEnv = process.env.DSH_HOME
+  const dshHome = fromEnv !== undefined && fromEnv.trim().length > 0 ? resolve(fromEnv) : join(homedir(), '.dsh')
+  const candidates = new Set<string>([
+    join(dshHome, '.agent-presets', 'super-ppts'),
+    join(homedir(), '.dsh', '.agent-presets', 'super-ppts'),
+  ])
+  return [...candidates]
+}
+
 /** 清理旧版本安装的插件预设目录（幂等 best-effort；失败静默跳过）。 */
 function removeLegacyPresetDir(): void {
-  try {
-    rmSync(resolve(homedir(), '.dsh', '.agent-presets', 'super-ppts'), { recursive: true, force: true })
-  } catch {
-    // 清理失败（目录权限等）不阻断插件加载，不影响其余功能
+  for (const dir of legacyPresetDirs()) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // 清理失败（目录权限等）不阻断插件加载，不影响其余功能
+    }
   }
 }
 

@@ -40,6 +40,9 @@ function check(name, condition, detail = '') {
 
 const fakeHome = mkdtempSync(join(tmpdir(), 'ppts-smoke-'))
 process.env.HOME = fakeHome
+// 关键隔离：本机 shell 可能带着全局 DSH_HOME（如 KCoder 桌面端 ~/.kcoder）。
+// 存储根现在跟随 $DSH_HOME，不先删掉它冒烟就会读写真实用户数据（教训：2026-09-16）。
+delete process.env.DSH_HOME
 
 const { registerPptsRoutes } = await import('../lib/routes.js')
 const { addTemplate, loadRegistry, REGISTRY_FILE } = await import('../lib/templates.js')
@@ -402,6 +405,57 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   } catch (error) {
     check('插件树加载：apply() 全量通过（真 cordis + 真 ToolRuntime）', false, String(error.message || error).slice(0, 300))
   }
+}
+
+/* ═══ 4.5 数据根解析（$DSH_HOME）与存量自愈 ═══ */
+
+{
+  // 默认解析：HOME 已指向 fakeHome 且 DSH_HOME 已删除 → ~/.dsh/super-ppts
+  const mod = await import('../lib/templates.js')
+  check('默认数据根（无 DSH_HOME → ~/.dsh/super-ppts）', mod.STORE_ROOT === join(fakeHome, '.dsh', 'super-ppts'), mod.STORE_ROOT)
+
+  // DSH_HOME 覆盖（KCoder 桌面端形态）：子进程独立解析，避免污染本进程常量
+  const alt = mkdtempSync(join(tmpdir(), 'ppts-dsh-home-'))
+  const child = execFileSync(process.execPath, [
+    '--input-type=module', '-e',
+    'const m = await import(' + JSON.stringify('file://' + join(packageRoot, 'lib/templates.js')) + ');\n' +
+    'console.log(m.STORE_ROOT)',
+  ], { env: { ...process.env, DSH_HOME: alt }, encoding: 'utf8' })
+  check('DSH_HOME 覆盖数据根（KCoder 桌面端形态）', child.trim() === join(alt, 'super-ppts'), child.trim())
+
+  // 旧存储根迁移：HOME=legacyHome（含 .dsh/super-ppts 数据）+ DSH_HOME=新根 →
+  // loadRegistry 把清单与二进制搬进新根，并把记录 file 按 id 重锚
+  const legacyHome = mkdtempSync(join(tmpdir(), 'ppts-legacy-home-'))
+  const legacyStore = join(legacyHome, '.dsh', 'super-ppts')
+  mkdirSync(join(legacyStore, 'templates'), { recursive: true })
+  writeFileSync(join(legacyStore, 'templates', 'told.pptx'), 'legacy')
+  writeFileSync(join(legacyStore, 'registry.json'), JSON.stringify({
+    templates: [{ id: 'told', name: '旧模板', description: '', file: join(legacyStore, 'templates', 'told.pptx'), size: 6, uploadedAt: '2026-01-01T00:00:00.000Z' }],
+    defaultTemplate: null,
+    prefs: {},
+  }))
+  const alt2 = mkdtempSync(join(tmpdir(), 'ppts-legacy-dsh-'))
+  const child2 = execFileSync(process.execPath, [
+    '--input-type=module', '-e',
+    'import { existsSync } from "node:fs";\n' +
+    'const m = await import(' + JSON.stringify('file://' + join(packageRoot, 'lib/templates.js')) + ');\n' +
+    'const r = m.loadRegistry();\n' +
+    'console.log(JSON.stringify({ migrated: existsSync(m.REGISTRY_FILE), count: r.templates.length, file: r.templates[0] && r.templates[0].file }))',
+  ], { env: { ...process.env, HOME: legacyHome, DSH_HOME: alt2 }, encoding: 'utf8' })
+  let legacyResult = {}
+  try { legacyResult = JSON.parse(child2.trim()) } catch { /* 解析失败落 check */ }
+  check('旧存储根迁移（$DSH_HOME 读取时搬移 legacy 数据）', legacyResult.migrated === true && legacyResult.count === 1, String(child2.trim()).slice(0, 200))
+  check('迁移后记录 file 重锚到新根', legacyResult.file === join(alt2, 'super-ppts', 'templates', 'told.pptx'), String(legacyResult.file))
+  rmSync(alt, { recursive: true, force: true })
+  rmSync(legacyHome, { recursive: true, force: true })
+  rmSync(alt2, { recursive: true, force: true })
+
+  // 清单 file 坏路径自愈（当前根内）：二进制在位 → 按 id 重锚
+  mkdirSync(mod.TEMPLATE_DIR, { recursive: true })
+  writeFileSync(join(mod.TEMPLATE_DIR, 'theal000001.pptx'), 'heal')
+  mod.saveRegistry({ templates: [{ id: 'theal000001', name: '自愈模板', description: '', file: '/nonexistent/theal000001.pptx', size: 4, uploadedAt: '2026-01-01T00:00:00.000Z' }], defaultTemplate: null, prefs: { defaultFormat: 'ask', renderReview: 'deliverable-only', outputDir: '', styleNotes: '' } })
+  const healed = mod.loadRegistry()
+  check('清单 file 坏路径按 id 自愈', healed.templates[0]?.file === join(mod.TEMPLATE_DIR, 'theal000001.pptx'), String(healed.templates[0]?.file))
 }
 
 /* ═══ 5. 混合交付 Phase 1：动画嵌入脚本 ═══ */
