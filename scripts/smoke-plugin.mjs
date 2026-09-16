@@ -917,6 +917,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['startTaskPolling', 'startTaskPolling'],                         // 轮询循环(可注入 schedule,3s 固定间隔)
     ['buildContinuePrompt', 'buildContinuePrompt'],                   // 大纲确认后的继续生成指令(Task 2)
     ['buildOutlineRevisePrompt', 'buildOutlineRevisePrompt'],         // 自然语言修改大纲指令(Task 2)
+    ['makeOutlineReviewView', 'makeOutlineReviewView'],               // 大纲确认视图(Plan 2b Task 3;确认门+未保存态)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -1865,11 +1866,17 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       && O.movePage([{ id: 'p1' }, { id: 'p2' }], 1, 1)[1].id === 'p2')
     check('copyPage: 复制到后一位且 id 全局唯一', (() => {
       const next = O.copyPage([{ id: 'p1', title: 'A' }, { id: 'p2', title: 'B' }], 0)
+      // 强化（反向验证可测性）：连续 id 样本下 uniquePageId 永不碰撞，
+      // 追加碰撞让步用例——副本 id 必须避开**已占用**的 p2（uniquePageId 去重）。
+      const clash = O.copyPage([{ id: 'p2', title: 'B' }], 0)
       return next.length === 3 && next[1].title === 'A' && next[1].id !== 'p1' && next[1].id !== 'p2'
+        && clash.length === 2 && clash[1].id !== 'p2' && clash[0].id === 'p2'
     })())
     check('addPage: 追加新页（唯一 id + 注入标题）', (() => {
       const next = O.addPage([{ id: 'p1' }, { id: 'p2' }], '新页面')
+      const clash = O.addPage([{ id: 'p2' }], '新页面') // 同上：p2 已占用时必须让步
       return next.length === 3 && next[2].id !== 'p1' && next[2].id !== 'p2' && next[2].title === '新页面'
+        && clash.length === 2 && clash[1].id !== 'p2'
     })())
     check('removePage: 删除目标页', O.removePage([{ id: 'p1' }, { id: 'p2' }], 0).length === 1)
     check('parseBullets: 丢空行、保留内容原样', JSON.stringify(O.parseBullets('a\n\n b \n')) === JSON.stringify(['a', ' b ']))
@@ -1891,6 +1898,190 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   } catch (error) {
     // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
     check('Plan 2b Task 3a 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
+}
+
+/* ═══ Plan 2b Task 3b：大纲确认视图（stub React 直接渲染 + 点击断言）═══
+   面板的核心控制点：大纲必须经用户确认才继续生成。stub 无重渲染——dirty 由
+   渲染期纯函数直算，异步链一律 await；共享状态（apiCallsOutline/sent/…）
+   每条断言前经 resetCase() 重置（计划注记的实现）。 */
+{
+  const H = loadedModule.__testHooks
+  const t = (key) => key
+  let apiCallsOutline = []; let sent = []; let updatedWith = null; let backed = false; let extra = null
+  const outlineTask = () => ({
+    id: 'k1', title: 'Q3 经营复盘', status: 'waiting-outline',
+    workspace: { id: 'ws1', name: '季度汇报', path: '/ws' },
+    brief: { topic: 'Q3 经营复盘', format: 'pptx' },
+    outlineVersion: 1,
+    outline: { version: 1, pages: [
+      { id: 'p1', title: '结论摘要', purpose: '帮助管理层快速理解', bullets: ['收入同比增长 18%'], pageType: '结论页' },
+      { id: 'p2', title: '核心经营指标', bullets: ['利润率下降 2.4pt'], pageType: 'KPI 数据页' },
+    ] },
+    materials: [], artifacts: [],
+    events: [{ at: '2026-09-16T04:00:00.000Z', kind: 'outline', text: '已生成大纲 v1（2 页）' }],
+  })
+  // 整理级修正：计划原文的形参 extra 遮蔽了外层 let extra，各例 `extra = {...}`
+  // 全部失效——去掉形参，读外层变量（计划注记「每条 check 前重置 extra」的语义）。
+  const outlineOpts = () => Object.assign({
+    task: outlineTask(),
+    api: (method, body) => { apiCallsOutline.push({ method, body }); return Promise.resolve(Object.assign({}, outlineTask(), { outlineVersion: (body && body.pages ? 2 : outlineTask().outlineVersion), status: method === 'tasks.confirmOutline' ? 'building' : 'waiting-outline', confirmedOutlineVersion: method === 'tasks.confirmOutline' ? (body && body.version) : undefined })) },
+    sendToSession: (text, wsId) => { sent.push({ text, wsId }); return Promise.resolve('submitted') },
+    onUpdated: (next) => { updatedWith = next },
+    onBack: () => { backed = true },
+  }, extra || {})
+  const resetCase = () => { apiCallsOutline = []; sent = []; updatedWith = null; backed = false; extra = null }
+  const outlineTree = () => H.makeOutlineReviewView(t, outlineOpts())({})
+  try {
+    resetCase()
+    const tree = outlineTree()
+    check('大纲视图根类名 sp-view-outline', !!byClass(tree, 'sp-view-outline').length)
+    check('大纲视图渲染页卡片×2 + 页标题输入', (() => {
+      // 整理级修正：byClass 是子串匹配，容器 sp-outline-page**s** 会顺带命中
+      // 片段 sp-outline-page——页卡片改用全等等值筛选（语义不变：卡片计数）。
+      const pages = collectElements(tree).filter((el) => classOf(el) === 'sp-outline-page')
+      const titles = byClass(tree, 'sp-page-title')
+      return pages.length === 2 && titles.length === 2 && titles[0].props.value === '结论摘要'
+    })())
+    check('大纲视图渲染目的/要点/类型控件 + 页操作四钮 + 首页 up 禁用', (() => {
+      const page = collectElements(tree).filter((el) => classOf(el) === 'sp-outline-page')[0]
+      return !!findElement(page, (el) => classOf(el) === 'sp-page-purpose')
+        && !!findElement(page, (el) => classOf(el) === 'sp-page-bullets')
+        && !!findElement(page, (el) => classOf(el) === 'sp-page-type')
+        && !!findElement(page, (el) => classOf(el) === 'sp-page-up') && !!findElement(page, (el) => classOf(el) === 'sp-page-down')
+        && !!findElement(page, (el) => classOf(el) === 'sp-page-copy') && !!findElement(page, (el) => classOf(el) === 'sp-page-delete')
+        && findElement(page, (el) => classOf(el) === 'sp-page-up').props.disabled === true
+    })())
+    check('页类型下拉含规格十类（以值抽查标题页/流程图/结束页）', (() => {
+      // 强化（任务书：十类齐全必须真断言）：下拉恰 10 个 option + 十键文案齐全，
+      // 覆盖原文的三点抽查（title/flow/end 在十键之内）。
+      const sel = findElement(tree, (el) => classOf(el) === 'sp-page-type')
+      const texts = treeText(sel)
+      const KEYS = ['pageTypeTitle', 'pageTypeSummary', 'pageTypeKpi', 'pageTypeTrend', 'pageTypeCompare',
+        'pageTypeTimeline', 'pageTypeFlow', 'pageTypeCase', 'pageTypePlan', 'pageTypeEnd']
+      return !!(sel.props && Array.isArray(sel.children)) && sel.children.length === 10
+        && KEYS.every((k) => texts.includes(k))
+    })())
+    check('主按钮 sp-outline-confirm 存在且未 busy 可点；back 按钮存在', (() => {
+      const btn = findElement(tree, (el) => classOf(el) === 'sp-outline-confirm')
+      return !!btn && btn.props.disabled !== true && !!findElement(tree, (el) => classOf(el) === 'sp-back')
+    })())
+
+    resetCase()
+    check('有注入的未保存修改 → sp-outline-dirty-banner + sp-outline-save 出现', (() => {
+      const modified = outlineTask().outline.pages.map((p, i) => i === 0 ? Object.assign({}, p, { title: '改过的标题' }) : Object.assign({}, p))
+      extra = { initialPages: modified }
+      const dirtyTree = H.makeOutlineReviewView(t, outlineOpts())({})
+      const ok = !!byClass(dirtyTree, 'sp-outline-dirty-banner').length && !!findElement(dirtyTree, (el) => classOf(el) === 'sp-outline-save')
+      extra = null
+      return ok
+    })())
+
+    resetCase()
+    check('修改指令为空点「让 Agent 修改」→ send 不被调用 + 错误横幅', await (async () => {
+      const revTree = outlineTree()
+      const btn = findElement(revTree, (el) => classOf(el) === 'sp-outline-revise')
+      await btn.props.onClick()
+      return sent.length === 0 && !!findElement(revTree, (el) => classOf(el) === 'sp-msg-err')
+    })())
+
+    resetCase()
+    check('注入修改指令 → 点修改 → sendToSession 收到含指令与任务 id 的文本（未自动确认大纲）', await (async () => {
+      extra = { reviseText: '合并第 3、4 页' }
+      const revTree = H.makeOutlineReviewView(t, outlineOpts())({})
+      const btn = findElement(revTree, (el) => classOf(el) === 'sp-outline-revise')
+      await btn.props.onClick()
+      extra = null
+      return sent.length === 1 && sent[0].text.includes('合并第 3、4 页') && sent[0].text.includes('任务 ID：k1')
+        && sent[0].wsId === 'ws1' && apiCallsOutline.every((c) => c.method !== 'tasks.confirmOutline')
+    })())
+
+    resetCase()
+    check('确认大纲（无未保存修改）→ confirmOutline(version=outlineVersion) → 继续 send 继续指令 → onUpdated 收 building 记录', await (async () => {
+      const tree2 = outlineTree()
+      const btn = findElement(tree2, (el) => classOf(el) === 'sp-outline-confirm')
+      await btn.props.onClick()
+      const outlineCall = apiCallsOutline.every((c) => c.method !== 'tasks.outline') // 干净态不先存
+      const confirmCall = apiCallsOutline.find((c) => c.method === 'tasks.confirmOutline')
+      return outlineCall && !!confirmCall && confirmCall.body.version === 1 && sent.length === 1
+        && sent[0].text.includes('继续') && updatedWith && updatedWith.status === 'building'
+    })())
+
+    resetCase()
+    check('注入未保存修改 → 点确认 → 先 tasks.outline（v2）再 confirmOutline(version=2)', await (async () => {
+      const modified = outlineTask().outline.pages.map((p, i) => i === 0 ? Object.assign({}, p, { title: '新结论' }) : Object.assign({}, p))
+      extra = { initialPages: modified }
+      const tree3 = H.makeOutlineReviewView(t, outlineOpts())({})
+      const btn = findElement(tree3, (el) => classOf(el) === 'sp-outline-confirm')
+      await btn.props.onClick()
+      extra = null
+      const savedCall = apiCallsOutline.find((c) => c.method === 'tasks.outline')
+      const confirmCall2 = apiCallsOutline.find((c) => c.method === 'tasks.confirmOutline')
+      return !!savedCall && savedCall.body.pages[0].title === '新结论' && !!confirmCall2 && confirmCall2.body.version === 2
+    })())
+
+    resetCase()
+    check('sendToSession 返回 copied → 提示粘贴横幅且任务保持已确认（不再 send 第二次）', await (async () => {
+      extra = { sendToSession: (text, ws) => { sent.push({ text, ws }); return Promise.resolve('copied') } }
+      const tree4 = H.makeOutlineReviewView(t, outlineOpts())({})
+      const btn = findElement(tree4, (el) => classOf(el) === 'sp-outline-confirm')
+      await btn.props.onClick()
+      extra = null
+      return sent.length === 1 && !!findElement(tree4, (el) => classOf(el) === 'sp-msg-err')
+    })())
+
+    resetCase()
+    check('confirmOutline 版本不匹配（400）→ 重取 tasks.get 并载入新版本 + 提示', await (async () => {
+      let gets = 0
+      extra = {
+        api: (method, body) => {
+          apiCallsOutline.push({ method, body })
+          if (method === 'tasks.confirmOutline') return Promise.reject(new Error('大纲版本不匹配（当前 v3）'))
+          if (method === 'tasks.get') { gets += 1; return Promise.resolve(Object.assign(outlineTask(), { outlineVersion: 3, outline: { version: 3, pages: [{ id: 'p1', title: 'Agent 改过的页', bullets: [] }] } })) }
+          return Promise.resolve(outlineTask())
+        },
+      }
+      const tree5 = H.makeOutlineReviewView(t, outlineOpts())({})
+      const btn = findElement(tree5, (el) => classOf(el) === 'sp-outline-confirm')
+      await btn.props.onClick()
+      extra = null
+      return gets === 1 && !!findElement(tree5, (el) => classOf(el) === 'sp-outline-resync')
+    })())
+
+    resetCase()
+    check('dirty 时点返回 → 出现未保存确认行（sp-discard-confirm），干净时直接 onBack', await (async () => {
+      const cleanTree = outlineTree()
+      const backBtn = findElement(cleanTree, (el) => classOf(el) === 'sp-back')
+      await backBtn.props.onClick()
+      const cleanBacked = backed; backed = false
+      const modified = outlineTask().outline.pages.map((p, i) => i === 0 ? Object.assign({}, p, { title: 'X' }) : Object.assign({}, p))
+      extra = { initialPages: modified }
+      const dirtyTree2 = H.makeOutlineReviewView(t, outlineOpts())({})
+      await findElement(dirtyTree2, (el) => classOf(el) === 'sp-back').props.onClick()
+      const hasConfirm = !!findElement(dirtyTree2, (el) => classOf(el) === 'sp-discard-confirm')
+      extra = null
+      return cleanBacked === true && hasConfirm === true
+    })())
+
+    resetCase()
+    check('无大纲记录（outlineVersion 0）→ sp-outline-empty 空态', (() => {
+      const noOutline = outlineTask(); noOutline.outline = undefined; noOutline.outlineVersion = 0
+      extra = { task: noOutline }
+      const emptyTree = H.makeOutlineReviewView(t, outlineOpts())({})
+      extra = null
+      return !!byClass(emptyTree, 'sp-outline-empty').length
+    })())
+
+    resetCase()
+    check('i18n 字典含大纲视图全部键（zh+en）', (() => {
+      const keys = ['outlineConfirm', 'outlineSave', 'outlineRevise', 'outlineAdd', 'pageNew',
+        'pageTypeTitle', 'pageTypeSummary', 'pageTypeKpi', 'pageTypeTrend', 'pageTypeCompare',
+        'pageTypeTimeline', 'pageTypeFlow', 'pageTypeCase', 'pageTypePlan', 'pageTypeEnd']
+      return keys.every((k) => zhDict()[k] !== undefined && enDict()[k] !== undefined)
+    })())
+  } catch (error) {
+    // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
+    check('Plan 2b Task 3b 断言块无异常执行', false, String(error && error.message).slice(0, 160))
   }
 }
 

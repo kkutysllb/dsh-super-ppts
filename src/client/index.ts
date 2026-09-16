@@ -43,12 +43,13 @@
  *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV3
  *    → createTask/createTaskAndStart/buildTaskPrompt → 轮询基元
  *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ makePanelsView（壳）→
- *    各视图工厂；测试钩子见 bundle 末尾 `exports.__testHooks`
+ *    各视图工厂（含大纲确认视图 makeOutlineReviewView + 页操作纯函数族）；
+ *    测试钩子见 bundle 末尾 `exports.__testHooks`
  *    （MakePanelsView / viewForStatus / statusGroupOf / SP_VIEW_NEW /
  *    SP_VIEW_TASK / isPollingStatus / startTaskPolling / SP_POLL_MS /
  *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
- *    createTask / createTaskAndStart / buildTaskPrompt / sendToChatV3 /
- *    clipboardFallback / uploadMaterial）。
+ *    createTask / createTaskAndStart / buildTaskPrompt / outlineOps /
+ *    makeOutlineReviewView / sendToChatV3 / clipboardFallback / uploadMaterial）。
  *
  * 8. 新建任务视图（Task 3 已交付）：主题 textarea（sp-topic-input，rows 3）+
  *    快速开始 8 chip（sp-quick-row / sp-quick-chip，点一条填入 qNText）+
@@ -536,6 +537,58 @@ export function normalizePage(page: unknown): { id: string; title: string; purpo
 /** 本地页数组 vs 已保存页数组是否发生了有效修改（大纲 dirty 判定）。 */
 export function outlineDiffers(localPages: unknown[], savedPages: unknown[]): boolean {
   return false
+}
+
+/** 大纲记录的最小形状（tasks.get 返回 TaskRecord 中，本视图实际读取的字段）。 */
+export interface PptsOutlineTaskRecord {
+  id?: string
+  title?: string
+  status?: string
+  outlineVersion?: number
+  confirmedOutlineVersion?: number
+  workspace?: { id?: string; name?: string; path?: string }
+  outline?: { version?: number; pages?: unknown[] }
+}
+
+/**
+ * 大纲确认视图选项（Plan 2b Task 3b 已交付；真实形态见 lib/client.js 的
+ * makeOutlineReviewView）。api=数据面桥（缺省回 bundle 内 api）；
+ * sendToSession=会话桥（确认成功后投递继续指令 / 修改指令投递给 Agent）；
+ * onUpdated=确认/修改后的记录回写（壳层据此切视图/续轮询）；onBack=返回。
+ * initialPages / reviseText 为**仅测试注入**（stub React 无重渲染，
+ * 冒烟经 options 构造未保存态与修改指令初值）。
+ */
+export interface PptsOutlineOptions {
+  task?: PptsOutlineTaskRecord
+  api?(method: string, body: Record<string, unknown>): Promise<unknown>
+  sendToSession?(text: string, workspaceId?: string): Promise<'submitted' | 'copied' | 'none'>
+  onUpdated?(next: unknown): void
+  onBack?(): void
+  initialPages?: unknown[] | (() => unknown[])
+  reviseText?: string
+}
+
+/**
+ * 大纲确认视图工厂（Plan 2b Task 3b；真实形态见 lib/client.js）。核心控制点：
+ * **大纲必须经用户确认才继续生成**。直接编辑只改本地副本（渲染期 outlineDiffers
+ * 直算 dirty，常驻渲染的 sp-outline-dirty-banner / sp-discard-confirm 行按状态
+ * display 切换）；落盘走 tasks.outline（新版本），确认走 tasks.confirmOutline
+ * （version 必须等于当前 outlineVersion）；确认成功 → buildContinuePrompt 经
+ * 会话桥投递 → onUpdated；版本不匹配 → tasks.get 重取载入新版本（不自动确认）
+ * + sp-outline-resync 提示。类名契约（断言按全等匹配，勿复合拼接）：
+ * sp-view-outline / sp-outline-head(sp-back·sp-task-title·sp-task-status) /
+ * sp-outline-hint / sp-outline-pages > sp-outline-page(sp-page-index·
+ * sp-page-title·sp-page-purpose·sp-page-bullets·sp-page-type·sp-page-ops>
+ * sp-page-up|down|copy|delete) / sp-outline-add / sp-outline-dirty-banner>
+ * sp-outline-save / sp-outline-revise-text / sp-outline-revise /
+ * sp-revise-dirty-confirm>sp-discard-confirm(sp-revise-save·sp-revise-discard) /
+ * sp-outline-confirm / sp-msg-ok·sp-msg-err / sp-outline-resync / sp-outline-empty。
+ */
+export function makeOutlineReviewView(
+  t: (key: string, params?: Record<string, unknown>) => string,
+  options: PptsOutlineOptions,
+): (props?: Record<string, unknown>) => unknown {
+  return function OutlineReview() { return null }
 }
 
 /**
