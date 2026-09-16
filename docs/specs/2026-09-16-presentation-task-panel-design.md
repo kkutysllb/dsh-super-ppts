@@ -487,9 +487,9 @@ interface PresentationTask {
   }
 
   materials: Array<{
-    id: string; name: string; size: number; type: string
+    id: string; name: string; size: number
     path: string            // 插件存储根之下的绝对路径
-    status: 'waiting' | 'uploading' | 'parsing' | 'ready' | 'error'
+    status: 'uploading' | 'ready' | 'error'
     error?: string
   }>
 
@@ -508,7 +508,6 @@ interface Outline {
   version: number
   pages: Array<{
     id: string
-    index: number
     title: string
     purpose?: string
     bullets: string[]
@@ -516,6 +515,12 @@ interface Outline {
   }>
 }
 ```
+
+> 实现校准（2026-09-16，与 `src/tasks.ts` 对齐）：
+> - `materials[]` 不含 `type` 字段（面板按扩展名自行推导即可）；素材状态只建模 **上传** 与 **Agent 读取结果**，
+>   不做 `waiting` / `parsing`——host 不解析文件内容，解析由 Agent 完成后经 `ppts_task` 的 `material` 动作回报。
+> - `Outline.pages[]` 不含 `index`：**数组顺序即页面顺序**（插入/删除页只需重排数组）。
+> - `artifacts[].status` 的 `'missing'` 由 `tasks.get` 的**只读存在性投影**写入（`existsSync` 判定，不落盘）。
 
 ## 数据面（host 路由与存储）
 
@@ -526,19 +531,21 @@ interface Outline {
 ├── registry.json                 # 既有：模板库 + 偏好（不动）
 ├── templates/                    # 既有：用户上传 .pptx（不动）
 └── tasks/
-    ├── index.json                # 任务索引（列表渲染只读它）
+    ├── index.json                # 任务索引（缓存：列表渲染只读它，缺失可自愈重建）
     └── <taskId>/
-        ├── task.json
+        ├── task.json             # 任务详情（含 events 与 artifacts）
         ├── outline-v1.json
         ├── outline-v2.json
-        ├── events.json
         └── materials/<file>
 ```
 
 - `DSH_HOME` 解析口径与 `templates.ts` 一致（`$DSH_HOME` → `~/.dsh`；KCoder 桌面端指向 `~/.kcoder`）。
 - 全部写入原子替换（tmp + rename）。
 - 单任务损坏（坏 JSON / 形态不符）改名 `*.corrupt-*` 留底，不影响其他任务加载。
-- 默认保留最近 50 个任务；已完成任务不自动删除；失败任务保留以便查错。
+- **索引是无损缓存，磁盘任务目录才是真源**：索引缺失/损坏/条目数少于磁盘任务目录数时自动重建；
+  不按数量裁剪（原「保留最近 50 条」会把「等待用户确认最久」的任务挤出索引，导致其永久不可见）。
+- **事件内嵌在 `task.json`**（上限 200 条），不单独落 `events.json`。
+- 已完成任务不自动删除；失败任务保留以便查错。
 
 ### 新增路由（沿既有 `/super-ppts` 信任围栏与信封）
 
@@ -557,7 +564,8 @@ interface Outline {
 
 ### 内置模板资源
 
-插件包内新增 `templates/builtin/`（随 npm 包分发），每个内置模板包含元数据与可选 `.pptx` 基底；
+内置模板的元数据真源是源码模块 `src/builtin-templates.ts`（编译进 `lib/`，随 npm 包分发），
+首版**不附带 `.pptx` 基底**——内置模板的版式由技能线按大纲生成，而不是套一份固定 deck；
 `ppts_templates` 工具的返回值扩展为「内置 + 用户」两类来源，供 Agent 与面板共用同一份口径。
 
 ## 失败模式与对策
@@ -596,7 +604,7 @@ interface Outline {
 - 任务存储层（`src/tasks.ts`）。
 - 任务路由与素材上传路由（`src/routes.ts` 扩展）。
 - `ppts_task` host 工具（`src/tools.ts` 扩展）与能力通告补充。
-- 内置模板资源 `templates/builtin/`。
+- 内置模板元数据模块 `src/builtin-templates.ts`（首版不附 `.pptx` 基底）。
 - 面板视图与任务状态消费逻辑（`lib/client.js` + `src/client/index.ts` 类型参考同构）。
 
 ## 验收标准
