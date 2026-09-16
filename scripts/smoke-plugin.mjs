@@ -210,6 +210,117 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
   check('内置模板 id 唯一', new Set(list.map(item => item.id)).size === list.length)
 }
 
+/* ═══ 1.5 任务存储层（src/tasks.ts → lib/tasks.js）═══ */
+
+const tasksMod = await import('../lib/tasks.js')
+{
+  const created = tasksMod.createTask({
+    title: 'Q3 经营复盘',
+    brief: { topic: '把 Q3 经营数据做成面向管理层的季度汇报', format: 'pptx' },
+    workspace: { id: 'ws1', name: '季度汇报', path: '/tmp/ws1' },
+  })
+  check('createTask 落盘并写入索引', typeof created.id === 'string' && tasksMod.loadIndex().tasks.length === 1)
+  check('任务目录与 materials 子目录已建立', existsSync(tasksMod.materialsDir(created.id)))
+
+  const loaded = tasksMod.loadTask(created.id)
+  check('loadTask 往返一致（标题/主题/状态）',
+    loaded?.title === 'Q3 经营复盘' && loaded?.brief.topic.includes('Q3') && loaded?.status === 'creating')
+
+  const advanced = tasksMod.updateTask(created.id, { status: 'analyzing', sessionId: 'sess-1' })
+  check('updateTask 推进状态与会话', advanced.status === 'analyzing' && advanced.sessionId === 'sess-1')
+
+  const outlined = tasksMod.saveOutline(created.id, [
+    { title: '结论摘要', purpose: '先给结论', bullets: ['收入 +18%'], pageType: 'KPI 结论页' },
+    { title: '核心指标' },
+  ])
+  check('saveOutline 版本自增并转 waiting-outline',
+    outlined.outlineVersion === 1 && outlined.outline?.pages.length === 2 && outlined.status === 'waiting-outline')
+  check('大纲落盘 outline-v1.json', existsSync(join(tasksMod.taskDir(created.id), 'outline-v1.json')))
+
+  let versionRejected = false
+  try { tasksMod.confirmOutline(created.id, 99) } catch (error) { versionRejected = error.code === 'bad-request' }
+  check('确认版本不匹配被拒绝（防串版本确认）', versionRejected)
+
+  const confirmed = tasksMod.confirmOutline(created.id, 1)
+  check('confirmOutline 记录确认版本并转 building',
+    confirmed.confirmedOutlineVersion === 1 && confirmed.status === 'building')
+}
+
+// 素材落盘：basename 安全化 + 空/超限拒绝
+{
+  const task = tasksMod.createTask({
+    title: '素材测试',
+    brief: { topic: '素材', format: 'pptx' },
+    workspace: { id: 'ws1', name: 'W', path: '/tmp/w' },
+  })
+  const written = await tasksMod.writeMaterial(
+    task.id, '../../evil.xlsx',
+    (async function* () { yield Buffer.alloc(1024, 3) })(),
+    10 * 1024 * 1024,
+  )
+  check('素材 basename 安全化（拒绝目录穿越）', written.name === 'evil.xlsx' && !written.path.includes('..'))
+  check('素材落盘并有字节数', existsSync(written.path) && written.size === 1024
+    && tasksMod.loadTask(task.id)?.materials.length === 1)
+
+  let emptyRejected = false
+  try {
+    await tasksMod.writeMaterial(task.id, 'empty.txt', (async function* () { /* 空流：0 chunk */ })(), 1024)
+  } catch (error) { emptyRejected = error.code === 'bad-request' }
+  check('空素材被拒绝且不留半截文件', emptyRejected)
+
+  let tooLargeRejected = false
+  try {
+    await tasksMod.writeMaterial(task.id, 'big.bin', (async function* () { yield Buffer.alloc(4096, 1) })(), 1024)
+  } catch (error) { tooLargeRejected = error.code === 'bad-request' }
+  check('超限素材被拒绝', tooLargeRejected)
+
+  let badIdRejected = false
+  try { tasksMod.taskDir('../../etc') } catch (error) { badIdRejected = error.code === 'bad-request' }
+  check('非法 taskId 拼路径前被拒绝', badIdRejected)
+}
+
+// 韧性与上限
+{
+  const corrupt = tasksMod.createTask({
+    title: '损坏任务',
+    brief: { topic: 'x', format: 'html' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  writeFileSync(tasksMod.taskFile(corrupt.id), '{oops 坏 JSON', 'utf8')
+  check('任务 JSON 损坏 → loadTask 返回 null（不抛错）', tasksMod.loadTask(corrupt.id) === null)
+  check('损坏任务留底 .corrupt-*',
+    readdirSync(tasksMod.taskDir(corrupt.id)).some(name => name.startsWith('task.json.corrupt-')))
+
+  for (let i = 0; i < tasksMod.MAX_INDEX_TASKS + 5; i += 1) {
+    tasksMod.createTask({
+      title: '批量 ' + i,
+      brief: { topic: 't', format: 'pptx' },
+      workspace: { id: 'w', name: 'w', path: '/p' },
+    })
+  }
+  check('索引按上限裁剪（= MAX_INDEX_TASKS）',
+    tasksMod.loadIndex().tasks.length === tasksMod.MAX_INDEX_TASKS, String(tasksMod.loadIndex().tasks.length))
+
+  const waiting = tasksMod.createTask({
+    title: '待确认',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  tasksMod.saveOutline(waiting.id, [{ title: '第一页' }])
+  const priority = tasksMod.listTasks()
+  check('列表按恢复优先级排序（等待确认排最前）', priority[0]?.id === waiting.id, String(priority[0]?.status))
+
+  const target = tasksMod.createTask({
+    title: '待删除',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  const targetDir = tasksMod.taskDir(target.id)
+  tasksMod.deleteTask(target.id)
+  check('deleteTask 移除索引与任务目录',
+    !existsSync(targetDir) && !tasksMod.loadIndex().tasks.some(item => item.id === target.id))
+}
+
 disposeRoutes()
 check('disposer 后路由已注销', routes.size === 0)
 
