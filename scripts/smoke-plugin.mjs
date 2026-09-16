@@ -797,7 +797,20 @@ const sandboxWindow = {
   },
 }
 
-vm.runInNewContext(clientSource, { window: sandboxWindow, console })
+// client 侧 fetch 记录桩：stub React 不执行 useEffect，因此只有断言里点击
+// 「开始制作」这类显式交互才会真的打到数据面——把请求抓下来断言信封与载荷。
+const fetchCalls = []
+const stubFetch = (url, init) => {
+  let body = null
+  try { body = init && init.body ? JSON.parse(String(init.body)) : null } catch { body = null }
+  fetchCalls.push({ url: String(url), body })
+  return Promise.resolve({
+    status: 200,
+    text: () => Promise.resolve(JSON.stringify({ ok: true, value: { id: 'task-smoke-1', status: 'waiting-launch' } })),
+  })
+}
+
+vm.runInNewContext(clientSource, { window: sandboxWindow, console, fetch: stubFetch })
 {
   check('client 自注册（__ModuleLoader__.load）', loadedModule !== null && loadedModule.__id === 'dsh-super-ppts')
   check('client 声明 inject 服务', Array.isArray(loadedModule.inject) && loadedModule.inject.includes('slots') && loadedModule.inject.includes('locale'))
@@ -878,6 +891,9 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     ['SP_VIEW_NEW', 'SP_VIEW_NEW'],                                   // 视图常量(默认落点=新建任务)
     ['viewForStatus', 'viewForStatus'],                               // 任务状态 → 恢复落点视图
     ['statusGroupOf', 'statusGroupOf'],                               // 任务状态 → 分组(最近任务)
+    ['makeNewTaskView', 'makeNewTaskView'],                           // 新建任务视图(Task 3;视图根自持类名)
+    ['buildBriefFrom', 'buildBriefFrom'],                             // brief 组装(templateId 三态保真)
+    ['createTask', 'createTask'],                                     // 任务创建最小桥(Task 6 换 createTaskAndStart)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -1205,6 +1221,124 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
   check('默认落在新建任务视图', renderedByClass(tree, 'sp-view-new-task').length === 1)
   check('面板壳不存在嵌套自建侧边栏/全屏容器',
     renderedByClass(tree, 'sp-sidebar').length === 0 && renderedByClass(tree, 'sp-fullscreen').length === 0)
+}
+
+/* ═══ client 新建任务视图：默认极简 + 可展开完整配置 ═══ */
+{
+  const registrations = []
+  let dictsSeen = null
+  const ctxStub = {
+    slots: {
+      inject(slotType, loader) { loader() },
+      register(options, component) { registrations.push({ options, component }); return () => {} },
+    },
+    locale: {
+      register(ns, dicts) { dictsSeen = dicts; return () => {} },
+      bind() { return (key) => key },
+    },
+    sessions: {
+      list: { getSnapshot: () => ({ current: 'sess-1' }) },
+      scope: () => ({ conversation: { input: { for: () => ({ setDraft() {}, submit() {} }) } } }),
+      create: async () => 'sess-new',
+      open() {},
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [], phase: 'ready' }) } },
+    layout: { selectPanel() {} },
+    effect(fn) { return fn() },
+  }
+  loadedModule.apply(ctxStub)
+  const panel = registrations.find(r => r.options.name === 'main')
+  const tree = panel.component({
+    useWorkspaces: (selector) => selector({
+      items: [{ workspaceId: 'ws1', path: '/tmp/ws1', title: '季度汇报', sessionIds: [] }],
+      phase: 'ready',
+    }),
+  })
+
+  // 断言一律走渲染入口（renderedByClass / renderedText）：stub React 不调用函数组件，
+  // 视图内部结构只有先 renderTree 展开才可见（裸 byClass 看不到子组件内部）。
+  check('新建任务：主题输入是主入口（textarea 在场）',
+    renderedByClass(tree, 'sp-topic-input').length === 1 && renderedByClass(tree, 'sp-topic-input')[0].type === 'textarea')
+  check('新建任务：交付形态是两张卡片而非下拉框',
+    renderedByClass(tree, 'sp-format-card').length === 2
+      && renderedByClass(tree, 'sp-format-card').every(el => el.type === 'button'))
+  check('新建任务：默认只显示极简路径（更多选项默认折叠）',
+    renderedByClass(tree, 'sp-advanced-body').length === 0
+      && renderedByClass(tree, 'sp-advanced-toggle').length === 1)
+  check('新建任务：主按钮是「开始制作」而非「放入输入框」',
+    renderedByClass(tree, 'sp-start').length === 1
+      && !renderedText(tree).includes('sendToChat'))
+  check('新建任务：无嵌套侧边栏/全屏容器', renderedByClass(tree, 'sp-sidebar').length === 0)
+  check('新建任务：未填主题时主按钮禁用',
+    renderedByClass(tree, 'sp-start')[0].props.disabled === true)
+
+  // 渲染一次并复用同一棵树：stub React 每次 renderTree 都会新建组件实例，跨实例
+  // 拿到的元素不属于同一次渲染，交互断言必须落在同一个快照上。
+  const rendered = renderTree(tree)
+  check('新建任务：快速开始 8 个 chip（q1..q8，均为可点按钮）',
+    byClass(rendered, 'sp-quick-chip').length === 8
+      && byClass(rendered, 'sp-quick-chip').every(el => el.type === 'button' && typeof el.props.onClick === 'function'))
+  // 注意：sp-config-summary 是折叠态下唯一命中该片段的容器（展开明细 sp-config-summary-extra 只在展开后出现）
+  check('新建任务：配置摘要一行 5 项（主题/形态/模板/素材数/页数）',
+    byClass(rendered, 'sp-config-summary').length === 1
+      && byClass(rendered, 'sp-summary-item').length === 5)
+  check('新建任务：素材入口 + 列表 + 隐藏多选文件输入在场',
+    byClass(rendered, 'sp-material-add').length === 1
+      && byClass(rendered, 'sp-material-list').length === 1
+      && byClass(rendered, 'sp-material-input').length === 1
+      && byClass(rendered, 'sp-material-input')[0].props.type === 'file'
+      && byClass(rendered, 'sp-material-input')[0].props.multiple === true)
+  check('新建任务：模板入口是占位入口（Task 4 接真实选择器）', byClass(rendered, 'sp-tpl-open').length === 1)
+
+  // stub React 的 useState 值快照在渲染时就已固定（无 reconciler），因此「填主题再点开始」
+  // 在同一次渲染里观察不到状态更新——改为断言守卫：主题为空时点主按钮**不发请求**。
+  byClass(rendered, 'sp-start')[0].props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  check('新建任务：主题为空时点「开始制作」不发请求（trim 空即返回）', fetchCalls.length === 0)
+
+  // 最小桥（Task 6 会被 createTaskAndStart 替换，形状契约不变）：直接调桥断言真实载荷。
+  const { buildBriefFrom, createTask } = loadedModule.__testHooks
+  const bridgeResult = await createTask({
+    title: '季度经营数据汇报',
+    brief: buildBriefFrom({ topic: ' 季度经营数据汇报 ', format: 'pptx', templateChoice: '' }),
+    workspace: { id: 'ws1', name: '季度汇报', path: '/tmp/ws1' },
+    materials: [],
+  })
+  const createCall = fetchCalls[0]
+  check('最小桥 createTask：tasks.create 落盘 + phase 停在 waiting-launch（不假装已启动）',
+    fetchCalls.length === 1 && createCall.url.endsWith('/super-ppts/api/tasks.create')
+      && createCall.body.title === '季度经营数据汇报'
+      && createCall.body.brief.topic === '季度经营数据汇报'
+      && createCall.body.brief.format === 'pptx'
+      && createCall.body.workspace.id === 'ws1'
+      && bridgeResult.phase === 'waiting-launch' && bridgeResult.task.id === 'task-smoke-1')
+  check('最小桥 createTask：未选模板 → 载荷 brief 不带 templateId 键（跟随默认）',
+    !Object.prototype.hasOwnProperty.call(createCall.body.brief, 'templateId'))
+
+  const briefFollow = buildBriefFrom({ topic: ' 主题A ', format: 'pptx', templateChoice: '' })
+  const briefNone = buildBriefFrom({ topic: '主题B', format: 'html', templateChoice: 'none' })
+  const briefTpl = buildBriefFrom({
+    topic: '主题C', format: 'pptx',
+    templateChoice: { id: 'tpl-1', name: '品牌模板', source: 'user' },
+  })
+  check('buildBriefFrom 三态①：templateChoice 为空 → 不写 templateId 键（跟随默认）',
+    !('templateId' in briefFollow) && briefFollow.topic === '主题A' && briefFollow.format === 'pptx')
+  check('buildBriefFrom 三态②：templateChoice="none" → templateId: null（不使用模板）',
+    Object.prototype.hasOwnProperty.call(briefNone, 'templateId') && briefNone.templateId === null
+      && briefNone.format === 'html')
+  check('buildBriefFrom 三态③：具体模板对象 → 写 id / name / source',
+    briefTpl.templateId === 'tpl-1' && briefTpl.templateName === '品牌模板' && briefTpl.templateSource === 'user')
+
+  const zhKeys = Object.keys(dictsSeen.zh).sort()
+  const enKeys = Object.keys(dictsSeen.en).sort()
+  check('新建任务：文案键 zh/en 两侧键名完全一致（数量 + 逐位比对）',
+    zhKeys.length === enKeys.length && zhKeys.every((key, index) => key === enKeys[index]),
+    `zh ${zhKeys.length} / en ${enKeys.length}`)
+  check('新建任务：Task 3 Step 4 文案键齐备（双侧）',
+    ['startTask', 'topicPlaceholder', 'advancedOptions', 'configSummary', 'formatPptxCard', 'formatHtmlCard',
+      'formatPptxHint', 'formatHtmlHint', 'taskStarted', 'taskWaitingLaunch', 'taskCreateFailed',
+      'materialAdd', 'materialList', 'materialRemove', 'topicRequired']
+      .every(key => key in dictsSeen.zh && key in dictsSeen.en))
 }
 
 /* ═══ 清理与结论 ═══ */

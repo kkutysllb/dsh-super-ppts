@@ -36,7 +36,22 @@
  *    文件内分层：SP_* 常量 → api/uploadMaterial/sendToChatV3 →
  *    makePanelsView（壳）→ 各视图工厂；测试钩子见 bundle 末尾
  *    `exports.__testHooks`（MakePanelsView / viewForStatus /
- *    statusGroupOf / SP_VIEW_NEW / makeNewTaskView / makeRecentView）。
+ *    statusGroupOf / SP_VIEW_NEW / makeNewTaskView / makeRecentView /
+ *    buildBriefFrom / createTask）。
+ *
+ * 8. 新建任务视图（Task 3 已交付）：主题 textarea（sp-topic-input，rows 3）+
+ *    快速开始 8 chip（sp-quick-row / sp-quick-chip，点一条填入 qNText）+
+ *    交付形态两张卡（sp-format-card，选中态 sp-format-card-active，默认取
+ *    prefs.defaultFormat，ask → PPTX）+ 更多选项（默认折叠：sp-advanced-toggle
+ *    切换 sp-advanced-body）+ 配置摘要（sp-config-summary 一行五项，展开明细
+ *    sp-config-summary-extra）+ 素材入口/列表（sp-material-add /
+ *    sp-material-list / sp-material-item / sp-material-remove + 隐藏
+ *    multiple file input）+ 主按钮 sp-start（文案 startTask，主题 trim 为空即
+ *    disabled）。brief 由 buildBriefFrom 组装，templateId 三态保真。
+ *    待接入：模板入口 sp-tpl-open 目前是占位按钮（Task 4 换成
+ *    makeTemplatePicker）；素材只做本地登记（Task 5 接真实上传）；「开始制作」
+ *    走 apply 注入的最小桥 createTask（只落盘，phase 恒为 'waiting-launch'，
+ *    Task 6 换成完整 createTaskAndStart）。
  *
  * APPLY NOTE：访问 ctx.slots / ctx.locale 需要两处同时声明——
  * - exports.inject = ['slots', 'locale', 'sessions', 'uiConversation',
@@ -154,10 +169,23 @@ export function statusGroupOf(status?: string): 'attention' | 'active' | 'failed
   return 'other'
 }
 
-/** 面板壳 bridges：本任务只注入 api；其余由后续任务实现后注入。 */
+/** 面板壳 bridges：api + Task 3 的最小桥 createTask；其余由后续任务实现后注入。 */
 export interface PptsPanelBridges {
   /** 任务数据面（既有 api）：POST /super-ppts/api/<method>（tasks.list / tasks.get / …）。 */
   api(method: string, body?: unknown): Promise<unknown>
+  /**
+   * Task 3 的最小桥（真实形态 = lib/client.js 的 `function createTask(input)`）：
+   * 只做任务落盘 `api('tasks.create', { title, brief, workspace })`，返回
+   * `{ task, phase: 'waiting-launch' }`。Task 6 会把它替换成完整的
+   * createTaskAndStart（素材上传 → 会话桥 v3 提交 → 状态推进，phase
+   * 可为 'started'），**视图层的调用形状与返回语义不变**。
+   */
+  createTask(input: {
+    title: string
+    brief: Record<string, unknown>
+    workspace: { id: string; name: string; path: string }
+    materials?: unknown[]
+  }): Promise<{ task: unknown; phase: 'started' | 'waiting-launch'; message?: string }>
   /** Task 5 实现：素材原始流式上传（POST /super-ppts/tasks/upload?taskId=&name=）。 */
   uploadMaterial?: unknown
   /** Task 6 实现：会话桥 v3（定位会话 → setDraft → submit，任务自动启动）。 */
@@ -177,12 +205,61 @@ export function makePanelsView(
   return function Panels() { return null }
 }
 
-/** 新建任务视图工厂（Task 3 实现；真实形态见 lib/client.js 的 makeNewTaskView）。 */
+/**
+ * 新建任务视图工厂（Task 3 已交付；真实形态见 lib/client.js 的 makeNewTaskView）。
+ * 返回的组件视图根自持 `sp-view-new-task`，内部结构（className 是断言契约）：
+ * `sp-topic-input`（textarea rows=3）/ `sp-quick-row` + `sp-quick-chip`×8 /
+ * `sp-format-card`×2（选中 `sp-format-card-active`）/ `sp-tpl-open`（Task 4 占位）/
+ * `sp-advanced-toggle` → `sp-advanced-body` / `sp-config-summary`（+`sp-summary-item`×5、
+ * 展开明细 `sp-config-summary-extra`）/ `sp-material-add` + `sp-material-list` +
+ * `sp-material-item` + `sp-material-remove` / `sp-start`（主题为空即 disabled）。
+ */
 export function makeNewTaskView(
   t: (key: string, params?: Record<string, unknown>) => string,
   options: Record<string, unknown>,
 ): (props?: Record<string, unknown>) => unknown {
   return function NewTaskView() { return null }
+}
+
+/** brief 组装状态：视图本地态 → buildBriefFrom 的入参（templateId 三态见下）。 */
+export interface PptsBriefState {
+  topic: string
+  format: string
+  audience?: string
+  scenario?: string
+  pageCount?: string
+  style?: string
+  styleNotes?: string
+  /** '' = 跟随设置页默认（不写键）；'none' = 不使用模板（null）；对象 = 具体模板。 */
+  templateChoice?: '' | 'none' | { id: string; name: string; source: string }
+}
+
+/**
+ * 按 host 契约组装 brief（Task 3 已交付；真实形态见 lib/client.js 的 buildBriefFrom）。
+ * templateId 三态语义保真：
+ * - `templateChoice` 为空 → **不写 templateId 键**（跟随设置页默认模板）；
+ * - `templateChoice === 'none'` → `templateId: null`（明确不使用模板）；
+ * - `templateChoice` 为模板对象 → 写 `templateId` / `templateName` / `templateSource`。
+ */
+export function buildBriefFrom(state: PptsBriefState): Record<string, unknown> {
+  return { topic: state.topic, format: state.format }
+}
+
+/**
+ * 任务创建最小桥（Task 3；真实形态见 lib/client.js 的 `function createTask(input)`）。
+ * 只做落盘：`api('tasks.create', { title, brief, workspace })` → 返回
+ * `{ task, phase: 'waiting-launch', message: '' }`（如实反映「已落盘但尚未启动」）。
+ * **Task 6 用完整的 createTaskAndStart 替换它**（apply 里换注入对象即可，
+ * 视图层接口不变）：素材上传 → 会话桥 v3 提交 → 状态推进到 analyzing，
+ * phase 置为 'started'。
+ */
+export function createTask(input: {
+  title: string
+  brief: Record<string, unknown>
+  workspace: { id: string; name: string; path: string }
+  materials?: unknown[]
+}): Promise<{ task: unknown; phase: 'started' | 'waiting-launch'; message?: string }> {
+  return Promise.resolve({ task: null, phase: 'waiting-launch', message: '' })
 }
 
 /** 最近任务视图工厂（Task 7 实现；真实形态见 lib/client.js 的 makeRecentView）。 */
@@ -205,7 +282,7 @@ export function makeTemplatePicker(
  * - uploadMaterial(method='tasks.upload' 原始流)：Task 5，素材上传；
  * - sendToChatV3(task, sessionId)：Task 6，定位会话 → conversation.input
  *   .for(actx).setDraft(text) → submit()（任务自动启动，无需回聊天窗口回车）；
- * - buildBriefFrom(state)：Task 3，按 host 契约组装 brief（templateId 三态保真）。
+ * - createTaskAndStart(input)：Task 6，替换上面的最小桥 createTask。
  * - api(method, body)：既有实现，复用为任务数据面客户端（tasks.* / templates.list）。
  */
 
@@ -313,8 +390,9 @@ export function apply(ctx: PptsClientContext): void {
     )
     const disposePanel = ctx.slots.register(
       { name: 'main', key: 'super-ppts-panel' },
-      // 任务面板壳（makePanelsView(t, { api })——sendToChatV3 / uploadMaterial
-      // 由后续任务实现后注入，真实形态见 lib/client.js）：
+      // 任务面板壳（makePanelsView(t, { api, createTask })——sendToChatV3 /
+      // uploadMaterial 由后续任务实现后注入；createTask 是 Task 3 的最小桥，
+      // Task 6 换成完整 createTaskAndStart，真实形态见 lib/client.js）：
       // root 面板接收全局标准 props useWorkspaces（工作区选择行，
       // 选择器用法 useWorkspaces(s => s.items)；旧宿主缺失时行隐藏）。
       function Workbench() { return null },
