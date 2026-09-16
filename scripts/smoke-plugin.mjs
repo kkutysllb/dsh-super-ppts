@@ -887,7 +887,6 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['settings.section', 'settings.section'],         // slot 类型
     ['order: 20', 'order: 20'],                       // 导航排序
     ['data-dsh-super-ppts-settings-nav', 'data-dsh-super-ppts-settings-nav'], // 导航图标标记
-    ['makeWorkbenchComponent', 'makeWorkbenchComponent'],             // 工作台主面板(0.1.5 panellist/main)
     ['sessions.create', 'sessions.create'],                           // 会话桥(无会话先建真会话)
     ['sidebar.panellist', 'sidebar.panellist'],                       // 左侧栏图标行
     ["key: 'super-ppts-panel'", '"super-ppts-panel"'],                // main keyed 主面板(同 id)
@@ -1209,8 +1208,10 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   check('client 注册 sidebar.panellist + main 双 slot（同 id super-ppts-panel）',
     client.includes('name: "sidebar.panellist"') && client.includes('name: "main"') && client.includes('"super-ppts-panel"'))
   check('client 软探测回退（宿主 ≤0.1.4 静默跳过）', client.includes('宿主无左侧栏 slot'))
-  check('工作台读全局工作区 hook（useWorkspaces 选择器）', client.includes('useWorkspaces(function'))
-  check('工作台状态完备（加载/空/错误/重试）', client.includes('wsLoading') && client.includes('wsEmpty') && client.includes('loadFailed') && client.includes('retry'))
+  check('任务面板读全局工作区 hook（useWorkspaces 选择器，新建任务视图）', client.includes('useWorkspaces(function'))
+  check('任务视图状态完备（新建空态/最近错误/素材空态/重试）', client.includes('recentError') && client.includes('materialEmpty') && client.includes('retry'))
+  // 守门匹配定义形态：历史沿革注释提及该组件名不算死代码复活
+  check('旧工作台已移除', !client.includes('function makeWorkbenchComponent'))
 }
 
 /* ═══ client 面板壳：视图状态机 ═══ */

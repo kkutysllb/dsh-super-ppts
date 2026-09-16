@@ -22,10 +22,10 @@
  *    CSS 用 Lucide presentation（幕布）字形替换齿轮；disposer 清标记，
  *    HMR/停用无残留。
  *
- * 6. 0.1.16 草稿桥 v2：工作区选择（uiWorkspace.openWorkspace 复用/新建会话）
- *    + 会话输入框程序化填充（sessions.scope(id).conversation.input
- *    .for(actx).setDraft）；剪贴板为降级路径（clipboardFallback /
- *    apply 内的 copyToClipboardBridge）。
+ * 6. 草稿桥 v2（历史沿革，已随旧工作台移除）：0.1.16 正式链路——工作区选择
+ *    （uiWorkspace.openWorkspace 复用/新建会话）+ 输入框程序化填充
+ *    （setDraft，剪贴板降级）。会话投递现统一走 v3（见 6b：同逻辑 +
+ *    自动 submit）。
  *
  * 6b. **会话桥 v3（Task 6 已交付，模块级 `sendToChatV3(ctx, text, workspaceId)`）**：
  *    会话定位逻辑同 v2，差别是填完草稿后**自动 `submit()`**——用户点「开始制作」
@@ -165,9 +165,10 @@ export function registerSettingsNavIcon(label: () => string): () => void {
  * → makeNewTaskView / makeRecentView / makeTemplatePicker /
  * makeOutlineReviewView / makeProgressView / makeResultView（视图工厂，返回组件）。
  * 本节的函数体只是**类型参考占位**，真实形态见 lib/client.js 同名符号。
- * 旧工作台 makeWorkbenchComponent（v2：工作区选择行 + 状态文案）仍保留在
- * lib/client.js 内（其 useWorkspaces 选择器用法与加载/空/错误文案由新视图
- * 承接），但 main keyed 主面板已改为 makePanelsView。
+ * 历史沿革：0.1.5 前的独立工作台组件（工作区选择行 + 状态文案，经 v2 草稿桥
+ * 发送）已从 lib/client.js 移除——useWorkspaces 选择器用法由新建任务视图
+ * 承接，加载/空/错误文案由最近任务视图（recentError/retry）承接；主面板
+ * 是本节的面板壳 makePanelsView。
  */
 
 /** 面板壳视图常量：新建任务（默认落点）/ 最近任务 / 任务详情（Plan 2b）。 */
@@ -932,88 +933,6 @@ export function uploadMaterial(
   return Promise.resolve({ name: file.name ?? 'material', size: file.size ?? 0, path: '' })
 }
 
-/** v2 草稿桥结果：'draft' = 已填输入框；'copied' = 剪贴板降级成功；'none' = 全失败。 */
-export type SendToChatResult = 'draft' | 'copied' | 'none'
-
-/**
- * 草稿桥 v2（与 lib/client.js 的 sendToChat/copyToClipboardBridge 行为同构，
- * 以 lib/client.js 实现为准）：
- * 1) 会话落点（含工作区选择）：同工作区 → 当前会话；跨工作区/无会话 →
- *    uiWorkspace.openWorkspace(ws)（复用空白会话或新建 + 自动切回对话）；
- *    工作区列表空 → sessions.create() + open。
- * 2) 填草稿：sessions.scope(id).conversation.input.for(actx).setDraft(text)
- *    —— shell 按 session binding 构建，面板激活时也能写输入框。
- * 3) 任一步不可达 → 降级剪贴板（v1：复制 + 切回会话视图）。
- */
-export async function sendToChat(ctx: PptsClientContext, text: string, workspaceId?: string): Promise<SendToChatResult> {
-  type SessionsFace = {
-    list?: { getSnapshot?(): { current?: string } }
-    create?(opts?: { cwd?: string }): Promise<string>
-    open?(id: string): void
-    scope?(id: string): (Record<string, unknown> & { conversation?: { input?: { for?(c: unknown): { setDraft?(t: string): void } } } }) | undefined
-  }
-  const sessions = (ctx as unknown as { sessions?: SessionsFace }).sessions
-  const workspaces = ctx.workspaces
-  const uiWorkspace = ctx.uiWorkspace
-  const backToChat = (): void => {
-    try { (ctx as unknown as { layout?: { selectPanel?(id: unknown): void } }).layout?.selectPanel?.(null) } catch { /* 服务不可达:留在当前面板 */ }
-  }
-  const clipboardFallback = async (): Promise<SendToChatResult> => {
-    let copied = false
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        copied = await navigator.clipboard.writeText(text).then(() => true).catch(() => false)
-      }
-    } catch { /* 剪贴板不可用 */ }
-    if (!copied) return 'none'
-    try {
-      const current = sessions?.list?.getSnapshot?.().current
-      if (!current && typeof sessions?.create === 'function') {
-        await sessions.create().then(async (id) => { try { sessions?.open?.(id) } catch { /* 已选中 */ } }).catch(() => { /* 无落点 */ })
-      }
-    } catch { /* 服务不可达 */ }
-    backToChat()
-    return 'copied'
-  }
-  try {
-    if (!sessions?.list?.getSnapshot) return clipboardFallback()
-    const current = sessions.list.getSnapshot().current
-    const wsList = workspaces?.list?.getSnapshot?.() ?? null
-    let wsOfCurrent: string | null = null
-    if (current && wsList) {
-      for (const item of wsList.items) {
-        if (item.sessionIds.includes(current)) { wsOfCurrent = item.workspaceId; break }
-      }
-    }
-    const wantsSwitch = workspaceId !== undefined && workspaceId !== '' && wsOfCurrent !== workspaceId
-    let sessionId: string | null | undefined = current
-    if (!current || wantsSwitch) {
-      if (uiWorkspace?.openWorkspace && wsList && wsList.items.length > 0) {
-        const target = workspaceId || wsOfCurrent || wsList.items[0].workspaceId
-        await uiWorkspace.openWorkspace(target)
-        sessionId = sessions.list.getSnapshot().current ?? null
-      } else if (typeof sessions.create === 'function') {
-        sessionId = await sessions.create()
-        try { sessions?.open?.(sessionId) } catch { /* 已选中 */ }
-        backToChat()
-      } else {
-        sessionId = null
-      }
-    }
-    if (sessionId === null || sessionId === undefined) return clipboardFallback()
-    backToChat()
-    const actx = sessions.scope?.(sessionId)
-    const shell = actx?.conversation?.input?.for?.(actx)
-    if (shell && typeof shell.setDraft === 'function') {
-      shell.setDraft(text)
-      return 'draft'
-    }
-    return clipboardFallback()
-  } catch {
-    return clipboardFallback()
-  }
-}
-
 /** v3 会话桥结果：'submitted' = 已写入并自动提交；'copied' = 降级剪贴板；'none' = 全失败。 */
 export type SendToChatV3Result = 'submitted' | 'copied' | 'none'
 
@@ -1114,7 +1033,7 @@ export async function sendToChatV3(
   }
 }
 
-/** 挂载设置页「演示文稿」区块 + 左侧栏工作台主面板。 */
+/** 挂载设置页「演示文稿」区块 + 左侧栏任务面板（makePanelsView）。 */
 export function apply(ctx: PptsClientContext): void {
   ctx.effect(() => ctx.locale.register('superPpts', { zh: {}, en: {} }), 'dsh-super-ppts: section dictionaries')
   const t = ctx.locale.bind('superPpts')
