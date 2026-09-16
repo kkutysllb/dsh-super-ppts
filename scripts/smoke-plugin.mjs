@@ -513,6 +513,24 @@ const tasksMod = await import('../lib/tasks.js')
   check('未知任务素材上传 → 404', badTask.status === 404)
 }
 
+/* ═══ 1.8 内置模板随清单下发 ═══ */
+{
+  const result = await callApi('templates.list', {})
+  check('templates.list 附带 builtinTemplates（≥ 4）',
+    result.json.ok && Array.isArray(result.json.value.builtinTemplates) && result.json.value.builtinTemplates.length >= 4)
+  check('内置模板带 source 标识',
+    result.json.value.builtinTemplates.every(item => item.source === 'builtin' && typeof item.name === 'string'))
+  check('用户模板字段口径不变（templates 仍为数组）', Array.isArray(result.json.value.templates))
+
+  // 路由面（Task 3 已落地）与工具面是两条独立下发路径：上面的 callApi 走
+  // /super-ppts/api，这里补一条 runTemplates（ppts_templates 的 execute 本体）
+  // 断言，避免「路由绿了、工具没带」这种单边回归漏网。
+  const toolList = (await import('../lib/tools.js')).runTemplates({ action: 'list' })
+  check('ppts_templates（工具面）list 附带 builtinTemplates（≥ 4）',
+    toolList.ok === true && Array.isArray(toolList.builtinTemplates) && toolList.builtinTemplates.length >= 4,
+    `ok=${toolList.ok} builtin=${Array.isArray(toolList.builtinTemplates) ? toolList.builtinTemplates.length : typeof toolList.builtinTemplates}`)
+}
+
 disposeRoutes()
 check('disposer 后路由已注销', routes.size === 0)
 
@@ -719,12 +737,9 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     needsInput.ok === true && store.loadTask(task.id)?.status === 'needs-input')
 
   const failed = runTask({ action: 'fail', taskId: task.id, stageKey: 'reviewing', reason: '渲染失败' })
-  // 注：fail 分支按计划先 appendEvent(reason) 再 setStatus('failed')，而 setStatus 自身会再压一条
-  // 「状态 → failed」——故 events.at(-1) 并非原因条目（计划文本此处按 events.at(-1) 断言会恒假）。
-  // 实现顺序为准，这里断言「原因以 kind=fail 落入事件流」。
   check('ppts_task fail 记录失败状态与原因',
     failed.ok === true && store.loadTask(task.id)?.status === 'failed'
-      && (store.loadTask(task.id)?.events ?? []).some(event => event.kind === 'fail' && /渲染失败/.test(event.text)))
+      && /渲染失败/.test(store.loadTask(task.id)?.events.at(-1)?.text ?? ''))
 
   check('ppts_task 未知任务 → ok:false', runTask({ action: 'get', taskId: 'nope-000000' }).ok === false)
 
@@ -768,6 +783,10 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console })
     const dispose = plugin.apply(ctx, {})
     check('插件树加载：apply() 全量通过（真 cordis + 真 ToolRuntime）', typeof dispose === 'function')
     check('能力通告 section 已注册', sections.length === 1 && sections[0].name === 'plugin:dsh-super-ppts')
+    check('能力通告含任务状态桥说明（ppts_task + 大纲确认）',
+      typeof sections[0].text === 'string' && sections[0].text.includes('ppts_task') && sections[0].text.includes('大纲'),
+      String(sections[0].text ?? '').slice(0, 80))
+    check('插件树注册任务素材路由', routes.has('/super-ppts/tasks/upload'))
     check('工具 schema 通告 wire 已建立', wires.length === 1)
     check('设置页路由已注册（api + upload）', routes.has('/super-ppts/api') && routes.has('/super-ppts/upload'))
     check('旧预设目录已清理（0.1.16 适配）', !existsSync(legacyPresetDir))

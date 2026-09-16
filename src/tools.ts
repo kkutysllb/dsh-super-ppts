@@ -1,10 +1,11 @@
 /**
  * dsh-super-ppts 原生 Agent 工具（host 侧）。
  *
- * 工具面刻意收敛为 3 个，生成主体由技能层编排（agent 直跑 python / 写 HTML）：
+ * 工具面刻意收敛为 4 个，生成主体由技能层编排（agent 直跑 python / 写 HTML）：
  * - ppts_check     ：环境自检（Python 3 / pptx-designer / 渲染链），输出结构化报告。
  * - ppts_render    ：PPTX → PDF → PNG 渲染验收（跨平台，soffice 优先 / Win COM 可选）。
  * - ppts_templates ：模板库与生成偏好查询（设置页数据的 agent 侧唯一读取面）。
+ * - ppts_task      ：演示任务状态桥（工作台任务的阶段/大纲确认/产物/失败上报）。
  *
  * 注册形态：dsh tools registry 的 raw definition（plain object，parameters 与
  * output.schema 均为 JSON Schema；output.render 返回 content-block 数组）。
@@ -24,6 +25,7 @@ import {
   type PptsPrefs,
   type TemplateRecord,
 } from './templates.js'
+import { BUILTIN_TEMPLATES, type BuiltinTemplate } from './builtin-templates.js'
 import {
   TaskStoreError,
   addArtifact,
@@ -238,9 +240,9 @@ function toToolEntry(record: TemplateRecord, defaultId: string | null): Template
   }
 }
 
-/** 模板库查询：list 返回全部模板 + 生成偏好；detail 按 id/名称取单条。 */
+/** 模板库查询：list 返回全部模板 + 生成偏好 + 内置模板；detail 按 id/名称取单条。 */
 export function runTemplates(params: PptsTemplatesParams = {}):
-  | { ok: true; message: string; count?: number; defaultTemplate?: TemplateToolEntry | null; prefs?: PptsPrefs; templates?: TemplateToolEntry[]; template?: TemplateToolEntry; hint?: string }
+  | { ok: true; message: string; count?: number; defaultTemplate?: TemplateToolEntry | null; prefs?: PptsPrefs; templates?: TemplateToolEntry[]; builtinTemplates?: readonly BuiltinTemplate[]; template?: TemplateToolEntry; hint?: string }
   | { ok: false; message: string } {
   try {
     const registry = loadRegistry()
@@ -255,12 +257,13 @@ export function runTemplates(params: PptsTemplatesParams = {}):
       return { ok: true, message: `模板「${record.name}」`, template: toToolEntry(record, registry.defaultTemplate) }
     }
     const templates = registry.templates.map(item => toToolEntry(item, registry.defaultTemplate))
-    const result: { ok: true; message: string; count: number; defaultTemplate?: TemplateToolEntry; prefs: PptsPrefs; templates: TemplateToolEntry[]; hint?: string } = {
+    const result: { ok: true; message: string; count: number; defaultTemplate?: TemplateToolEntry; prefs: PptsPrefs; templates: TemplateToolEntry[]; builtinTemplates: readonly BuiltinTemplate[]; hint?: string } = {
       ok: true,
       message: templates.length === 0 ? '模板库为空' : `共 ${templates.length} 个模板`,
       count: templates.length,
       prefs: registry.prefs,
       templates,
+      builtinTemplates: BUILTIN_TEMPLATES,
     }
     // 未设置默认模板时字段整体缺省（dsh-tools schema 子集不支持 type 数组，
     // defaultTemplate 声明为 object，不能落 null；isDefault 标志始终可判断）。
@@ -283,7 +286,9 @@ export const pptsTemplatesTool: DshToolDefinition = {
     'list：全部模板（名称/id/绝对路径/描述/是否默认）+ 偏好（默认交付形态/渲染验收策略/输出目录/风格备注）；' +
     'detail：按 id 或名称取单条。' +
     '用户要求「按模板 X 制作 / 用我的模板」或 Brief 涉及模板时必须先调用本工具拿路径；' +
-    '模板化 PPTX 用技能线 VI Build 路径（以模板为基底 Presentation(path)）。',
+    '模板化 PPTX 用技能线 VI Build 路径（以模板为基底 Presentation(path)）。'
+    + '返回中的 builtinTemplates 为插件内置模板（source=builtin，随插件版本提供，不可删除）；'
+    + 'templates 为用户上传模板（source=user 口径，见各自 isDefault）。',
   parameters: {
     type: 'object',
     properties: {
@@ -303,6 +308,7 @@ export const pptsTemplatesTool: DshToolDefinition = {
         defaultTemplate: { type: 'object', description: '默认模板条目；未设置默认时本字段不出现（templates[].isDefault 亦可判断）' },
         prefs: { type: 'object' },
         templates: { type: 'array', items: { type: 'object' } },
+        builtinTemplates: { type: 'array', items: { type: 'object' }, description: '插件内置模板（source=builtin，无 .pptx 基底，由技能线按大纲生成）' },
         template: { type: 'object' },
         hint: { type: 'string' },
       },
@@ -420,8 +426,10 @@ export function runTask(params: PptsTaskParams): PptsTaskResult {
       case 'fail': {
         const reason = String(params.reason ?? '').trim()
         if (reason === '') return { ok: false, message: 'action=fail 需要 reason' }
-        appendEvent(taskId, 'fail', reason)
-        const failed = setStatus(taskId, 'failed')
+        // 先转失败状态再压原因：setStatus 自身会追加一条「状态 → failed」事件，
+        // 若反序则原因不是最后一条——面板「最近事件」直接展示原因更有用。
+        setStatus(taskId, 'failed')
+        const failed = appendEvent(taskId, 'fail', reason)
         return { ok: true, message: `已记录失败：${reason}（可重试当前阶段）`, taskId, status: failed.status }
       }
       case 'get':
