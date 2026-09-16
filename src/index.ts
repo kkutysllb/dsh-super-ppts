@@ -9,7 +9,8 @@
  *    config.announceToAgent 关闭）。具体生成工作流由技能层（skills/ppts-pptx、
  *    skills/ppts-html）承载，提示词里不重复技能正文，避免上下文膨胀。
  * 3. 原生工具注册：ppts_check（环境自检）、ppts_render（渲染验收）、
- *    ppts_templates（模板库与生成偏好查询）。
+ *    ppts_templates（模板库与生成偏好查询）、ppts_task（演示任务状态桥：
+ *    阶段上报 / 大纲闸门 / 产物登记）。
  * 4. 设置页通道：注册 /super-ppts HTTP 路由（模板上传 + JSON 操作面），
  *    供 Web 设置页「演示文稿」菜单项管理用户 PPTX 模板库与生成偏好
  *    （存储见 templates.ts，路由见 routes.ts）。
