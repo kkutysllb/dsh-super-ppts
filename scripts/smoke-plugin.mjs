@@ -1698,6 +1698,45 @@ vm.runInNewContext(clientSource, sandboxGlobal)
       && renderedText(errTree).includes('recentError'))
 }
 
+/* ═══ client 样式：宿主 token + 无嵌套布局（Task 8）═══
+   规格「宿主边界与布局约束」：面板是宿主 main 区里的**普通块**——不自建全屏
+   容器、不出现 100vw/100vh/position:fixed，宽度与滚动交还宿主；颜色/边框走
+   宿主 token（--dsw-alias-*）。断言直接读源码文本（无 DOM 可算样式）。 */
+{
+  const css = readFileSync(join(packageRoot, 'lib', 'client.js'), 'utf8')
+  // 类名边界匹配：避免 .sp-tab 被 .sp-tabs 的样式“顺带满足”
+  const defined = (name) => new RegExp('\\.' + name + '(?![A-Za-z0-9_-])').test(css)
+  check('样式引用宿主 alias token（--dsw-alias-*）', css.includes('--dsw-alias-border-l'))
+  check('样式未引入自有全屏/固定定位容器',
+    !/\.sp-(panels|view-[a-z-]+)\s*\{[^}]*position:\s*fixed/.test(css)
+      && !/\.sp-(panels|view-[a-z-]+)\s*\{[^}]*100vh/.test(css))
+  check('样式未使用 100vw（宽度交还宿主）', !/\.sp-(panels|view-[a-z-]+)[^{]*\{[^}]*100vw/.test(css))
+  // 「新增类名均有样式定义」：面板壳 + 新建任务 + 模板选择器 + 最近任务
+  // （Task 3/4/5/7 渲染的类名一并纳入，避免出现无样式的半成品视图）
+  const required = [
+    'sp-panels', 'sp-panels-head', 'sp-panels-title', 'sp-tabs', 'sp-tab', 'sp-tab-active',
+    'sp-view-new-task', 'sp-view-recent', 'sp-new-title', 'sp-topic-input',
+    'sp-quick-row', 'sp-quick-chip', 'sp-formats', 'sp-format-card', 'sp-format-card-active',
+    'sp-fmt-title', 'sp-fmt-hint', 'sp-advanced-toggle', 'sp-advanced-body',
+    'sp-config-summary', 'sp-config-summary-line', 'sp-config-summary-extra',
+    'sp-summary-title', 'sp-summary-item', 'sp-start',
+    'sp-material-add', 'sp-material-input', 'sp-material-list', 'sp-material-item',
+    'sp-material-name', 'sp-material-meta', 'sp-material-remove',
+    'sp-tpl-open', 'sp-tpl-picker', 'sp-tpl-toolbar', 'sp-tpl-title', 'sp-tpl-close',
+    'sp-tpl-filter', 'sp-tpl-search', 'sp-tpl-count', 'sp-tpl-group', 'sp-tpl-group-head',
+    'sp-tpl-group-builtin', 'sp-tpl-group-user', 'sp-tpl-grid', 'sp-tpl-card', 'sp-tpl-body',
+    'sp-tpl-head', 'sp-tpl-thumb', 'sp-tpl-scenario', 'sp-tpl-tags', 'sp-tpl-tag',
+    'sp-tpl-source', 'sp-tpl-default', 'sp-tpl-use', 'sp-tpl-none', 'sp-tpl-follow',
+    'sp-tpl-manage', 'sp-tpl-foot',
+    'sp-task-item', 'sp-task-head', 'sp-task-title', 'sp-task-status', 'sp-task-meta',
+    'sp-task-list', 'sp-task-group-title', 'sp-task-time', 'sp-task-open', 'sp-work-name',
+    'sp-group-attention', 'sp-group-active', 'sp-group-failed', 'sp-group-done',
+    'sp-recent-empty', 'sp-recent-error', 'sp-recent-retry',
+  ]
+  const unstyled = required.filter(name => !defined(name))
+  check('新增视图类名均有样式定义', unstyled.length === 0, unstyled.join(', '))
+}
+
 /** 伪 File：client 只用到 name 与流式 body，测试里给最小替身。 */
 function BlobContent(name, size) { this.name = name; this.size = size }
 
