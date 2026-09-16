@@ -907,6 +907,9 @@ vm.runInNewContext(clientSource, sandboxGlobal)
     ['buildTaskPrompt', 'buildTaskPrompt'],                           // 投递给 Agent 的 Brief 组装(内嵌任务 ID)
     ['tasks.create', 'tasks.create'],                                 // 先落盘再启动(顺序不可颠倒)
     ['submit', 'submit'],                                             // v3 关键一步:自动提交(用户无需回车)
+    ['SP_VIEW_TASK', 'SP_VIEW_TASK'],                                 // 任务详情视图(Plan 2b;打开任务的路由落点)
+    ['isPollingStatus', 'isPollingStatus'],                           // 活跃态白名单(终态停止轮询)
+    ['startTaskPolling', 'startTaskPolling'],                         // 轮询循环(可注入 schedule,3s 固定间隔)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -1696,6 +1699,81 @@ vm.runInNewContext(clientSource, sandboxGlobal)
       && renderedByClass(errTree, 'sp-recent-retry').length === 1
       && renderedByClass(errTree, 'sp-recent-retry').every(el => typeof el.props.onClick === 'function')
       && renderedText(errTree).includes('recentError'))
+}
+
+/* ═══ Plan 2b Task 1：视图路由基元 + 活跃任务轮询 ═══
+   stub React 不执行 useEffect、useState 不触发重渲染——轮询循环的调度必须
+   可注入：断言传假 schedule（记录 fn / 间隔），真实 React 走默认实现。 */
+{
+  const H = loadedModule.__testHooks
+  try {
+    // D1 修正后的恢复落点（规格「状态 → 恢复落点」表）
+    check('viewForStatus: waiting-outline → outline',
+      H.viewForStatus('waiting-outline') === 'outline')
+    check('viewForStatus: creating/waiting-launch/needs-input/failed/cancelled → progress',
+      H.viewForStatus('creating') === 'progress' && H.viewForStatus('waiting-launch') === 'progress'
+      && H.viewForStatus('needs-input') === 'progress' && H.viewForStatus('failed') === 'progress'
+      && H.viewForStatus('cancelled') === 'progress')
+    check('viewForStatus: analyzing/building/reviewing → progress; completed → result',
+      H.viewForStatus('analyzing') === 'progress' && H.viewForStatus('building') === 'progress'
+      && H.viewForStatus('reviewing') === 'progress' && H.viewForStatus('completed') === 'result')
+    check('viewForStatus: 未知/空 → SP_VIEW_NEW',
+      H.viewForStatus(undefined) === H.SP_VIEW_NEW && H.viewForStatus('whatever') === H.SP_VIEW_NEW)
+
+    // 轮询白名单：规格「面板侧刷新策略」固定四个活跃态
+    check('isPollingStatus: 四个活跃态 true', H.isPollingStatus('analyzing') && H.isPollingStatus('building')
+      && H.isPollingStatus('reviewing') && H.isPollingStatus('waiting-outline'))
+    check('isPollingStatus: 终态/等待用户/未知 false',
+      !H.isPollingStatus('completed') && !H.isPollingStatus('failed') && !H.isPollingStatus('cancelled')
+      && !H.isPollingStatus('needs-input') && !H.isPollingStatus('creating')
+      && !H.isPollingStatus('waiting-launch') && !H.isPollingStatus(undefined))
+
+    // startTaskPolling：可注入 schedule 的轮询循环（真实 React effect 走默认实现）
+    const ticks = []
+    let rescheduleCount = 0
+    let cancelled = false
+    const scheduled = []
+    const pollTaskActive = { id: 'k1', status: 'building' }
+    const pollTaskDone = { id: 'k1', status: 'completed' }
+    const pollQueue = [pollTaskActive, pollTaskDone]
+    const pollApi = (method, body) => {
+      check('startTaskPolling: 轮询请求 tasks.get + id', method === 'tasks.get' && body.id === 'k1')
+      return Promise.resolve(pollQueue.length > 0 ? pollQueue.shift() : pollTaskActive)
+    }
+    const cancelPoll = H.startTaskPolling('k1', (record) => ticks.push(record), {
+      api: pollApi,
+      schedule: (fn, ms) => {
+        check('startTaskPolling: 调度间隔 = SP_POLL_MS', ms === H.SP_POLL_MS && H.SP_POLL_MS === 3000)
+        rescheduleCount += 1
+        scheduled.push(fn)
+        return () => { cancelled = true }
+      },
+    })
+    // 第 1 轮 loop：active → onTick + 重新调度
+    await scheduled[0]()
+    check('startTaskPolling: onTick 收到 tasks.get 记录', ticks.length === 1 && ticks[0].status === 'building')
+    check('startTaskPolling: 活跃态继续调度', rescheduleCount === 2 && typeof scheduled[1] === 'function')
+    // 第 2 轮：终态 → onTick 但不再调度
+    await scheduled[1]()
+    check('startTaskPolling: 终态停止调度', ticks.length === 2 && rescheduleCount === 2)
+    // cancel 幂等（随后调用不抛）
+    let cancelThrew = false
+    try { cancelPoll(); cancelPoll() } catch { cancelThrew = true }
+    check('startTaskPolling: cancel 可重复调用', !cancelThrew && cancelled)
+
+    // 轮询请求失败（网络抖动）不终止循环：继续调度
+    let errReschedule = 0
+    const scheduledErr = []
+    H.startTaskPolling('k2', () => {}, {
+      api: () => Promise.reject(new Error('boom')),
+      schedule: (fn) => { errReschedule += 1; scheduledErr.push(fn); return () => {} },
+    })
+    await scheduledErr[0]()
+    check('startTaskPolling: 请求失败继续轮询', errReschedule === 2)
+  } catch (error) {
+    // 符号缺失/行为异常时整体记 FAIL（不让未捕获异常中断后续既有断言）
+    check('Plan 2b Task 1 断言块无异常执行', false, String(error && error.message).slice(0, 160))
+  }
 }
 
 /* ═══ client 样式：宿主 token + 无嵌套布局（Task 8）═══

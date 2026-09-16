@@ -41,9 +41,11 @@
  *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动归宿主：
  *    **不自建**侧边栏 / 右侧固定栏 / 全屏容器 / 100vw / 100vh。
  *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV3
- *    → createTask/createTaskAndStart/buildTaskPrompt → makePanelsView（壳）→
+ *    → createTask/createTaskAndStart/buildTaskPrompt → 轮询基元
+ *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ makePanelsView（壳）→
  *    各视图工厂；测试钩子见 bundle 末尾 `exports.__testHooks`
  *    （MakePanelsView / viewForStatus / statusGroupOf / SP_VIEW_NEW /
+ *    SP_VIEW_TASK / isPollingStatus / startTaskPolling / SP_POLL_MS /
  *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
  *    createTask / createTaskAndStart / buildTaskPrompt / sendToChatV3 /
  *    clipboardFallback / uploadMaterial）。
@@ -144,7 +146,8 @@ export function registerSettingsNavIcon(label: () => string): () => void {
 
 /* ── 任务面板壳 / 视图状态机（与 lib/client.js 同构，以其实现为准）─────
  * 真实分层：SP_* 常量 → api / uploadMaterial / sendToChatV3 →
- * makePanelsView（面板壳）→ makeNewTaskView / makeRecentView /
+ * 轮询基元（isPollingStatus / startTaskPolling / SP_POLL_STATUSES /
+ * SP_POLL_MS）→ makePanelsView（面板壳）→ makeNewTaskView / makeRecentView /
  * makeTemplatePicker（视图工厂，返回组件）。
  * 本节的函数体只是**类型参考占位**，真实形态见 lib/client.js 同名符号。
  * 旧工作台 makeWorkbenchComponent（v2：工作区选择行 + 状态文案）仍保留在
@@ -152,32 +155,37 @@ export function registerSettingsNavIcon(label: () => string): () => void {
  * 承接），但 main keyed 主面板已改为 makePanelsView。
  */
 
-/** 面板壳视图常量：新建任务（默认落点）/ 最近任务。 */
+/** 面板壳视图常量：新建任务（默认落点）/ 最近任务 / 任务详情（Plan 2b）。 */
 export const SP_VIEW_NEW = 'new-task'
 export const SP_VIEW_RECENT = 'recent'
+export const SP_VIEW_TASK = 'task'
 
 /* 视图容器类名契约（视图根自持、壳层只传 props，不产生多余包裹层）：
  * 新建任务 → 'sp-view-new-task'；最近任务 → 'sp-view-recent'。 */
 
 /**
- * 任务状态 → 恢复落点视图（Plan 2b 补 outline / progress / result 三个落点）：
- * waiting-outline | needs-input → outline；analyzing | building | reviewing | failed
- * → progress；completed → result；其余（creating / waiting-launch / cancelled / 未知）
- * → SP_VIEW_NEW。
+ * 任务状态 → 恢复落点视图（规格「状态 → 恢复落点」表，Plan 2b D1 修正）：
+ * - waiting-outline → 大纲确认视图；
+ * - creating / waiting-launch / analyzing / building / reviewing /
+ *   needs-input / failed / cancelled → 生成进度视图（启动恢复区 /
+ *   补充信息区 / 错误恢复区 / 只读详情是同一视图内的状态变体）；
+ * - completed → 结果视图；其余（未知）→ 新建任务。
  */
 export function viewForStatus(status?: string): string {
   switch (status) {
     case 'waiting-outline':
-    case 'needs-input':
       return 'outline'
+    case 'creating':
+    case 'waiting-launch':
     case 'analyzing':
     case 'building':
     case 'reviewing':
+    case 'needs-input':
+    case 'failed':
+    case 'cancelled':
       return 'progress'
     case 'completed':
       return 'result'
-    case 'failed':
-      return 'progress'
     default:
       return SP_VIEW_NEW
   }
@@ -191,6 +199,38 @@ export function statusGroupOf(status?: string): 'attention' | 'active' | 'failed
   if (status === 'failed') return 'failed'
   if (status === 'completed') return 'done'
   return 'other'
+}
+
+/* ── 活跃任务轮询（规格「面板侧刷新策略」：活跃态 3s 固定间隔，终态停止）── */
+
+/** 轮询白名单：仅这四个活跃态轮询；终态与等待用户输入（needs-input）不轮询。 */
+export const SP_POLL_STATUSES = ['analyzing', 'building', 'reviewing', 'waiting-outline']
+/** 轮询固定间隔（毫秒）。 */
+export const SP_POLL_MS = 3000
+
+/** 轮询白名单判定：仅 SP_POLL_STATUSES 内的活跃态返回 true。 */
+export function isPollingStatus(status?: string): boolean {
+  return SP_POLL_STATUSES.indexOf(String(status || '')) !== -1
+}
+
+/**
+ * 单任务轮询循环：到点 → tasks.get → onTick(record) → 记录仍是活跃态则
+ * 按固定间隔续期，终态（或 cancel）即停。网络抖动（请求失败）按「继续
+ * 轮询」处理——一次失败不该杀死恢复观察；onTick 拿不到记录时收到 null，
+ * 由调用方决定是否提示。返回 cancel（幂等，可重复调用）。
+ * （真实形态见 lib/client.js 同名函数：schedule 语义 = 到点单发一次，
+ * 默认用 setTimeout 实现，不用 setInterval；loop 返回 promise 供注入方
+ * await 完整一轮。）
+ */
+export function startTaskPolling(
+  taskId: string,
+  onTick: (record: unknown) => void,
+  options?: {
+    api?: (method: string, body?: unknown) => Promise<unknown>
+    schedule?: (fn: () => void, ms: number) => () => void
+  },
+): () => void {
+  return function cancel() { /* 类型参考占位，真实形态见 lib/client.js */ }
 }
 
 /** 面板壳 bridges：api + 任务启动编排 createTask（+ 素材上传 uploadMaterial）。 */
@@ -213,6 +253,8 @@ export interface PptsPanelBridges {
   uploadMaterial?(taskId: string, file: { name?: string; size?: number }): Promise<{ name: string; size: number; path: string }>
   /** Task 6 已交付：会话桥 v3（模块级 `sendToChatV3(ctx, text, workspaceId)`）。 */
   sendToChatV3?(ctx: PptsClientContext, text: string, workspaceId?: string): Promise<SendToChatV3Result>
+  /** Plan 2b：会话消息桥（大纲修改指令 / 继续生成 / 补充信息 / 继续修改都走它）。 */
+  sendToSession?(text: string, workspaceId?: string): Promise<'submitted' | 'copied' | 'none'>
 }
 
 /**
