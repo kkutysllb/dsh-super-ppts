@@ -49,7 +49,9 @@
  *    multiple file input）+ 主按钮 sp-start（文案 startTask，主题 trim 为空即
  *    disabled）。brief 由 buildBriefFrom 组装，templateId 三态保真。
  *    模板入口 sp-tpl-open 已是**真实选择器**入口（Task 4，打开/关闭由视图层
- *    状态控制，折叠态不渲染选择器）；素材只做本地登记（Task 5 接真实上传）；
+ *    状态控制，折叠态不渲染选择器）；素材已接上传通道（Task 5：
+ *    `uploadMaterial(taskId, file)` → POST /super-ppts/tasks/upload，视图把原始
+ *    File 留在本地待上传队列，真正的上传编排由 Task 6 的 createTaskAndStart 做）；
  *    「开始制作」走 apply 注入的最小桥 createTask（只落盘，phase 恒为
  *    'waiting-launch'，Task 6 换成完整 createTaskAndStart）。
  *
@@ -197,8 +199,8 @@ export interface PptsPanelBridges {
     workspace: { id: string; name: string; path: string }
     materials?: unknown[]
   }): Promise<{ task: unknown; phase: 'started' | 'waiting-launch'; message?: string }>
-  /** Task 5 实现：素材原始流式上传（POST /super-ppts/tasks/upload?taskId=&name=）。 */
-  uploadMaterial?: unknown
+  /** Task 5 已交付：素材原始流式上传（POST /super-ppts/tasks/upload?taskId=&name=）。 */
+  uploadMaterial?(taskId: string, file: { name?: string; size?: number }): Promise<{ name: string; size: number; path: string }>
   /** Task 6 实现：会话桥 v3（定位会话 → setDraft → submit，任务自动启动）。 */
   sendToChatV3?: unknown
 }
@@ -327,12 +329,27 @@ export function makeTemplatePicker(
 }
 
 /* 后续任务符号（此处仅 JSDoc 引用，实现由各自任务追加到 lib/client.js）：
- * - uploadMaterial(method='tasks.upload' 原始流)：Task 5，素材上传；
  * - sendToChatV3(task, sessionId)：Task 6，定位会话 → conversation.input
  *   .for(actx).setDraft(text) → submit()（任务自动启动，无需回聊天窗口回车）；
  * - createTaskAndStart(input)：Task 6，替换上面的最小桥 createTask。
  * - api(method, body)：既有实现，复用为任务数据面客户端（tasks.* / templates.list）。
  */
+
+/**
+ * 素材上传（Task 5 已交付；真实形态见 lib/client.js 的
+ * `function uploadMaterial(taskId, file)`）：原始流式 POST 到
+ * `/super-ppts/tasks/upload?taskId=&name=`（body 即 File/Blob，不套 JSON 信封），
+ * 返回宿主登记的素材信息 `{ name, size, path }`；宿主拒绝（信封 ok:false）时
+ * 抛出带宿主 message 的错误，不静默吞掉。
+ * 只登记到**已有任务**：任务尚未创建时素材先留在视图的本地待上传队列
+ * （materials 条目的 file 字段），任务落盘后由 Task 6 的编排逐项调用本函数。
+ */
+export function uploadMaterial(
+  taskId: string,
+  file: { name?: string; size?: number },
+): Promise<{ name: string; size: number; path: string }> {
+  return Promise.resolve({ name: file.name ?? 'material', size: file.size ?? 0, path: '' })
+}
 
 /** v2 草稿桥结果：'draft' = 已填输入框；'copied' = 剪贴板降级成功；'none' = 全失败。 */
 export type SendToChatResult = 'draft' | 'copied' | 'none'

@@ -810,7 +810,11 @@ const stubFetch = (url, init) => {
   })
 }
 
-vm.runInNewContext(clientSource, { window: sandboxWindow, console, fetch: stubFetch })
+// vm 沙箱的全局对象（contextified 后即 bundle 内的 globalThis）：client bundle
+// 里的裸 fetch 解析到它的 fetch 属性，因此断言需要临时替换网络层时换这里
+// ——外层 realm 的 globalThis 与 bundle 无关（两处都换仅为本文件的干净复原）。
+const sandboxGlobal = { window: sandboxWindow, console, fetch: stubFetch }
+vm.runInNewContext(clientSource, sandboxGlobal)
 {
   check('client 自注册（__ModuleLoader__.load）', loadedModule !== null && loadedModule.__id === 'dsh-super-ppts')
   check('client 声明 inject 服务', Array.isArray(loadedModule.inject) && loadedModule.inject.includes('slots') && loadedModule.inject.includes('locale'))
@@ -895,6 +899,8 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console, fetch: stubFe
     ['makeTemplatePicker', 'makeTemplatePicker'],                     // 模板选择器(Task 4;内置+用户分组,来源文本可辨)
     ['buildBriefFrom', 'buildBriefFrom'],                             // brief 组装(templateId 三态保真)
     ['createTask', 'createTask'],                                     // 任务创建最小桥(Task 6 换 createTaskAndStart)
+    ['uploadMaterial', 'uploadMaterial'],                             // 素材上传(Task 5;原始流式 POST)
+    ['/super-ppts/tasks/upload', '/super-ppts/tasks/upload'],         // 任务素材路由(与 host routes.ts 同路径)
   ]
   const missing = []
   for (const [tsKey, jsKey] of pairs) {
@@ -1421,6 +1427,69 @@ vm.runInNewContext(clientSource, { window: sandboxWindow, console, fetch: stubFe
       'tplBuiltin', 'tplUser', 'tplNone', 'tplNoneHint', 'tplFollow', 'tplFollowHint', 'tplManage', 'tplUse']
       .every(key => key in dictsSeen.zh && key in dictsSeen.en))
 }
+
+/* ═══ client 素材上传 ═══ */
+{
+  const uploaded = []
+  const fakeFetch = (url, init) => {
+    uploaded.push({ url: url, method: init && init.method })
+    return Promise.resolve({
+      text: () => Promise.resolve(JSON.stringify({ ok: true, value: { name: 'Q3.xlsx', size: 2048, path: '/tmp/m/Q3.xlsx' } })),
+    })
+  }
+  // client bundle 跑在 vm 沙箱里：它的 globalThis 是 sandboxGlobal（裸 fetch 解析到
+  // 该对象的 fetch 属性）。按计划同时替换外层 realm 的 globalThis.fetch，两处都在
+  // finally 里复原——否则会污染后续断言（块末的复原探针会验证这一点）。
+  const originalFetch = globalThis.fetch
+  const originalSandboxFetch = sandboxGlobal.fetch
+  globalThis.fetch = fakeFetch
+  sandboxGlobal.fetch = fakeFetch
+  try {
+    const result = await loadedModule.__testHooks.uploadMaterial('k123', new BlobContent('Q3.xlsx', 2048))
+    check('素材上传：走任务素材路由且带 taskId 与文件名',
+      uploaded.length === 1
+        && uploaded[0].url.indexOf('/super-ppts/tasks/upload') === 0
+        && uploaded[0].url.indexOf('taskId=k123') !== -1
+        && decodeURIComponent(uploaded[0].url).indexOf('name=Q3.xlsx') !== -1
+        && uploaded[0].method === 'POST')
+    check('素材上传：返回宿主登记的素材信息', result && result.name === 'Q3.xlsx' && result.size === 2048)
+  } finally {
+    globalThis.fetch = originalFetch
+    sandboxGlobal.fetch = originalSandboxFetch
+  }
+
+  let failed = false
+  const rejectFetch = () => Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ ok: false, error: { code: 'bad-request', message: '素材超过大小上限' } })) })
+  globalThis.fetch = rejectFetch
+  sandboxGlobal.fetch = rejectFetch
+  try {
+    await loadedModule.__testHooks.uploadMaterial('k123', new BlobContent('big.bin', 10))
+  } catch (error) { failed = /大小上限/.test(String(error && error.message)) }
+  finally {
+    globalThis.fetch = originalFetch
+    sandboxGlobal.fetch = originalSandboxFetch
+  }
+  check('素材上传：宿主拒绝时抛出可读错误（不静默吞掉）', failed)
+  check('素材上传：断言后 fetch 已复原（两处引用都与断言前一致，不污染后续断言）',
+    globalThis.fetch === originalFetch && sandboxGlobal.fetch === originalSandboxFetch)
+
+  // 行为级复原探针：复原后再走一次真实数据面（createTask → api → fetch），
+  // 必须重新落到本套件自己的记录桩上（fetchCalls 增长、fakeFetch 不再被调用）
+  // ——引用相等只能证明赋值复原，这一步证明 bundle 内的裸 fetch 也真的换回来了。
+  const callsBeforeProbe = fetchCalls.length
+  await loadedModule.__testHooks.createTask({
+    title: '复原探针',
+    brief: { topic: '复原探针', format: 'pptx' },
+    workspace: { id: '', name: '', path: '' },
+    materials: [],
+  })
+  check('素材上传：复原后数据面仍走记录桩（假 fetch 不残留）',
+    fetchCalls.length === callsBeforeProbe + 1 && uploaded.length === 1
+      && fetchCalls[fetchCalls.length - 1].url.endsWith('/super-ppts/api/tasks.create'))
+}
+
+/** 伪 File：client 只用到 name 与流式 body，测试里给最小替身。 */
+function BlobContent(name, size) { this.name = name; this.size = size }
 
 /* ═══ 清理与结论 ═══ */
 
