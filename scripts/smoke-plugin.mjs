@@ -2049,8 +2049,10 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     })())
 
     resetCase()
-    check('dirty 时点返回 → 出现未保存确认行（sp-discard-confirm），干净时直接 onBack', await (async () => {
+    check('dirty 时点返回 → 未保存确认行存在且干净态隐藏；dirty 的 back 被守卫拦住（不 onBack）', await (async () => {
       const cleanTree = outlineTree()
+      const confirmRow = findElement(cleanTree, (el) => classOf(el) === 'sp-revise-dirty-confirm')
+      const hiddenWhenClean = !!confirmRow && !!confirmRow.props.style && confirmRow.props.style.display === 'none'
       const backBtn = findElement(cleanTree, (el) => classOf(el) === 'sp-back')
       await backBtn.props.onClick()
       const cleanBacked = backed; backed = false
@@ -2060,7 +2062,19 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       await findElement(dirtyTree2, (el) => classOf(el) === 'sp-back').props.onClick()
       const hasConfirm = !!findElement(dirtyTree2, (el) => classOf(el) === 'sp-discard-confirm')
       extra = null
-      return cleanBacked === true && hasConfirm === true
+      // 判别力所在：dirty 的 back 必须被 requestBack 守卫拦住——backed 仍 false；
+      // 若守卫被删，onBack 会直接触发 → 本断言 FAIL（反向验证锚点）
+      return cleanBacked === true && hiddenWhenClean === true && hasConfirm === true && backed === false
+    })())
+
+    resetCase()
+    check('仅剩一页时删除按钮禁用（防误删到空大纲）', (() => {
+      const single = outlineTask()
+      single.outline = { version: 1, pages: [{ id: 'p1', title: '独苗', bullets: [] }] }
+      extra = { task: single }
+      const oneTree = H.makeOutlineReviewView(t, outlineOpts())({})
+      extra = null
+      return findElement(oneTree, (el) => classOf(el) === 'sp-page-delete').props.disabled === true
     })())
 
     resetCase()
