@@ -175,4 +175,17 @@ export interface MaterialUploadResult {
  * 超限即断、失败即清理（不留半截文件）；文件名经 safeMaterialName 安全化。
  */
 export declare function writeMaterial(taskId: string, rawName: string, body: AsyncIterable<unknown>, limitBytes: number): Promise<MaterialUploadResult>;
+/**
+ * 删除一个素材（记录 + 文件）。
+ * 纪律同 deleteTask：**先改记录保存、再删文件**——反序时「文件已删、记录没保存」会留下
+ * 指向空文件的素材条目，而记录才是面板渲染与 Agent 读取的来源（清单先一致，文件清理尽力而为）。
+ * materialId 只用于数组查找、不参与拼路径，故无需白名单校验。
+ */
+export declare function removeMaterial(id: string, materialId: string): TaskRecord;
+/**
+ * 更新素材状态：Agent 读取素材后回报读取结果（ready = 已读通 / error = 读失败并附原因）。
+ * error 只在 status === 'error' 时写入、ready 时**清除该键**——否则上一次的解析失败原因会
+ * 一直挂在一个已经读通的素材上，面板持续显示过期报错，用户分不清当前是否真的还有问题。
+ */
+export declare function setMaterialStatus(id: string, materialId: string, status: 'ready' | 'error', error?: string): TaskRecord;
 export {};

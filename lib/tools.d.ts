@@ -79,19 +79,24 @@ export declare function runTemplates(params?: PptsTemplatesParams): {
 };
 export declare const pptsTemplatesTool: DshToolDefinition;
 export interface PptsTaskParams {
-    action: 'stage' | 'outline' | 'artifact' | 'needs-input' | 'fail' | 'get';
+    action: 'stage' | 'outline' | 'artifact' | 'material' | 'needs-input' | 'fail' | 'get';
     /** 任务 id（由工作台创建任务时写入 Brief 的「任务 ID」）。 */
     taskId: string;
     /** action=stage：阶段键（analyzing / planning / building / reviewing）。 */
     stageKey?: string;
     stageIndex?: number;
     stageTotal?: number;
+    /** action=stage：阶段说明；action=material：读取失败原因（error 文案）。 */
     detail?: string;
     /** action=outline：页面结构（标题必填，其余可选）。 */
     pages?: OutlinePage[];
     /** action=artifact：产物类型与路径。 */
     artifactType?: 'pptx' | 'pdf' | 'html';
     artifactPath?: string;
+    /** action=material：素材 id（Brief 内嵌素材清单中的 id）。 */
+    materialId?: string;
+    /** action=material：读取结果——ready=已读通，error=读失败（原因走 detail）。 */
+    materialStatus?: 'ready' | 'error';
     /** action=needs-input：需要用户回答的具体问题。 */
     question?: string;
     /** action=fail：失败阶段与原因。 */
@@ -105,6 +110,9 @@ export interface PptsTaskResult {
     outlineVersion?: number;
     confirmedOutlineVersion?: number;
     pageCount?: number;
+    /** action=material：被更新的素材 id 与其新状态（回执，便于 Agent 核对）。 */
+    materialId?: string;
+    materialStatus?: 'ready' | 'error';
 }
 /** 任务状态桥：Agent 上报阶段/大纲/产物/补充/失败，或读取当前确认状态。 */
 export declare function runTask(params: PptsTaskParams): PptsTaskResult;
