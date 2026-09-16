@@ -531,6 +531,143 @@ const tasksMod = await import('../lib/tasks.js')
     `ok=${toolList.ok} builtin=${Array.isArray(toolList.builtinTemplates) ? toolList.builtinTemplates.length : typeof toolList.builtinTemplates}`)
 }
 
+/* ═══ 1.9 素材变更面（删除 / 状态）+ 产物存在性投影 ═══ */
+{
+  // —— 存储层：removeMaterial（记录先一致、文件清理尽力而为）——
+  const store = tasksMod.createTask({
+    title: '素材删除',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  const doomed = await tasksMod.writeMaterial(
+    store.id, '待删.xlsx',
+    (async function* () { yield Buffer.alloc(512, 4) })(),
+    1024 * 1024,
+  )
+  const doomedId = tasksMod.loadTask(store.id).materials.find(item => item.name === '待删.xlsx').id
+  const removed = tasksMod.removeMaterial(store.id, doomedId)
+  check('removeMaterial 从记录中摘除素材',
+    removed.materials.length === 0 && !removed.materials.some(item => item.id === doomedId))
+  check('removeMaterial 删除素材文件（磁盘已无残留）', !existsSync(doomed.path))
+  check('removeMaterial 记录落盘一致（loadTask 反映为空）', tasksMod.loadTask(store.id).materials.length === 0)
+
+  let removeNotFound = false
+  try { tasksMod.removeMaterial(store.id, 'm000000000') } catch (error) { removeNotFound = error.code === 'not-found' }
+  check('removeMaterial 未知 materialId → not-found', removeNotFound)
+
+  // —— 存储层：setMaterialStatus（error 写原因、ready 清原因）——
+  await tasksMod.writeMaterial(
+    store.id, '解析.xlsx',
+    (async function*() { yield Buffer.alloc(256, 6) })(),
+    1024 * 1024,
+  )
+  const parsedId = tasksMod.loadTask(store.id).materials.find(item => item.name === '解析.xlsx').id
+  const errored = tasksMod.setMaterialStatus(store.id, parsedId, 'error', '第 3 行缺列：无法解析')
+  check('setMaterialStatus 报 error：状态与原因落盘',
+    errored.materials[0].status === 'error' && errored.materials[0].error === '第 3 行缺列：无法解析'
+      && tasksMod.loadTask(store.id).materials[0].error === '第 3 行缺列：无法解析')
+  const restored = tasksMod.setMaterialStatus(store.id, parsedId, 'ready')
+  check('setMaterialStatus 报 ready：error 字段被清除（不留过期报错）',
+    restored.materials[0].status === 'ready' && restored.materials[0].error === undefined
+      && tasksMod.loadTask(store.id).materials[0].error === undefined)
+
+  let badMaterialStatus = false
+  try { tasksMod.setMaterialStatus(store.id, parsedId, 'bogus') } catch (error) { badMaterialStatus = error.code === 'bad-request' }
+  check('setMaterialStatus 非法状态 → bad-request', badMaterialStatus)
+
+  let statusNotFound = false
+  try { tasksMod.setMaterialStatus(store.id, 'm000000000', 'ready') } catch (error) { statusNotFound = error.code === 'not-found' }
+  check('setMaterialStatus 未知 materialId → not-found', statusNotFound)
+
+  // —— 路由面：tasks.materialDelete / tasks.materialStatus ——
+  const routed = await callApi('tasks.create', {
+    title: '素材路由变更',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  const routeId = routed.json.value.id
+
+  const routeFile = await tasksMod.writeMaterial(
+    routeId, '路由素材.txt',
+    (async function*() { yield Buffer.alloc(128, 8) })(),
+    1024 * 1024,
+  )
+  const routeMaterialId = tasksMod.loadTask(routeId).materials[0].id
+  const deletedRoute = await callApi('tasks.materialDelete', { id: routeId, materialId: routeMaterialId })
+  check('tasks.materialDelete 成功：返回更新后的记录且文件已删',
+    deletedRoute.status === 200 && deletedRoute.json.ok === true
+      && deletedRoute.json.value.materials.length === 0 && !existsSync(routeFile.path),
+    `status=${deletedRoute.status} materials=${deletedRoute.json.value?.materials?.length}`)
+  const deleteMissing = await callApi('tasks.materialDelete', { id: routeId, materialId: routeMaterialId })
+  check('tasks.materialDelete 未知素材 → 404 not-found',
+    deleteMissing.status === 404 && deleteMissing.json.error?.code === 'not-found',
+    `status=${deleteMissing.status} code=${deleteMissing.json.error?.code}`)
+
+  const routeFile2 = await tasksMod.writeMaterial(
+    routeId, '路由状态.txt',
+    (async function*() { yield Buffer.alloc(64, 9) })(),
+    1024 * 1024,
+  )
+  const routeMaterialId2 = tasksMod.loadTask(routeId).materials[0].id
+  const statusRoute = await callApi('tasks.materialStatus', {
+    id: routeId, materialId: routeMaterialId2, status: 'error', error: '编码不支持',
+  })
+  check('tasks.materialStatus 成功：状态与原因写入记录',
+    statusRoute.status === 200 && statusRoute.json.ok === true
+      && statusRoute.json.value.materials[0].status === 'error'
+      && statusRoute.json.value.materials[0].error === '编码不支持',
+    `status=${statusRoute.status} materialStatus=${statusRoute.json.value?.materials?.[0]?.status}`)
+  const statusBad = await callApi('tasks.materialStatus', { id: routeId, materialId: routeMaterialId2, status: 'bogus' })
+  check('tasks.materialStatus 非法 status → 400 bad-request',
+    statusBad.status === 400 && statusBad.json.error?.code === 'bad-request',
+    `status=${statusBad.status} code=${statusBad.json.error?.code}`)
+  const statusMissing = await callApi('tasks.materialStatus', { id: routeId, materialId: 'm000000000', status: 'ready' })
+  check('tasks.materialStatus 未知素材 → 404 not-found', statusMissing.status === 404)
+
+  // —— 路由面：tasks.list 的 status 白名单（拼错不再静默返回空列表）——
+  const badListStatus = await callApi('tasks.list', { status: 'buiding' })
+  check('tasks.list 非法 status → 400 bad-request',
+    badListStatus.status === 400 && badListStatus.json.error?.code === 'bad-request',
+    `status=${badListStatus.status} tasks=${JSON.stringify(badListStatus.json.value?.tasks ?? null).slice(0, 40)}`)
+  const goodListStatus = await callApi('tasks.list', { status: 'creating' })
+  check('tasks.list 合法 status 仍可过滤',
+    goodListStatus.status === 200 && goodListStatus.json.ok === true && Array.isArray(goodListStatus.json.value.tasks))
+
+  // —— 路由面：tasks.get 的产物存在性只读投影 ——
+  const ghostArtifact = join(fakeHome, 'never-generated.pptx')
+  const liveArtifact = join(fakeHome, 'generated.pdf')
+  writeFileSync(liveArtifact, 'pdf-bytes')
+  tasksMod.addArtifact(routeId, { type: 'pptx', path: ghostArtifact, status: 'ready' })
+  tasksMod.addArtifact(routeId, { type: 'pdf', path: liveArtifact, status: 'ready' })
+  const projected = (await callApi('tasks.get', { id: routeId })).json.value
+  const ghostProjected = projected.artifacts.find(item => item.type === 'pptx')
+  const liveProjected = projected.artifacts.find(item => item.type === 'pdf')
+  check('tasks.get 产物存在性投影：文件缺失 → missing',
+    ghostProjected?.status === 'missing', `status=${ghostProjected?.status}`)
+  check('tasks.get 产物存在性投影：文件在位 → ready', liveProjected?.status === 'ready')
+  check('产物投影是只读的（磁盘仍为 ready，未写回 missing）',
+    tasksMod.loadTask(routeId).artifacts.find(item => item.type === 'pptx')?.status === 'ready')
+
+  // —— 工具面：ppts_task 的 material 回报与未知 action ——
+  const { runTask } = await import('../lib/tools.js')
+  const reported = runTask({
+    action: 'material', taskId: routeId, materialId: routeMaterialId2,
+    materialStatus: 'error', detail: '工具面：编码不支持',
+  })
+  check('ppts_task material 回报素材状态（工具面 → 存储层）',
+    reported.ok === true && reported.materialId === routeMaterialId2 && reported.materialStatus === 'error'
+      && tasksMod.loadTask(routeId).materials[0].error === '工具面：编码不支持',
+    `ok=${reported.ok} message=${String(reported.message).slice(0, 60)}`)
+  const typedBack = runTask({ action: 'material', taskId: routeId, materialId: routeMaterialId2, materialStatus: 'ready' })
+  check('ppts_task material 报 ready 时清除原因',
+    typedBack.ok === true && tasksMod.loadTask(routeId).materials[0].error === undefined)
+
+  const unknownAction = runTask({ action: 'nope', taskId: routeId })
+  check('ppts_task 未知 action → ok:false（不再静默等同 get）',
+    unknownAction.ok === false && /未知 action/.test(unknownAction.message) && unknownAction.message.includes('nope'),
+    `ok=${unknownAction.ok} message=${String(unknownAction.message).slice(0, 80)}`)
+}
+
 disposeRoutes()
 check('disposer 后路由已注销', routes.size === 0)
 

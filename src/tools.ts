@@ -32,6 +32,7 @@ import {
   appendEvent,
   requireTask,
   saveOutline,
+  setMaterialStatus,
   setStatus,
   updateTask,
   type OutlinePage,
@@ -327,19 +328,24 @@ export const pptsTemplatesTool: DshToolDefinition = {
  * Agent 用 action=get 读到 confirmedOutlineVersion 后继续生成。 */
 
 export interface PptsTaskParams {
-  action: 'stage' | 'outline' | 'artifact' | 'needs-input' | 'fail' | 'get'
+  action: 'stage' | 'outline' | 'artifact' | 'material' | 'needs-input' | 'fail' | 'get'
   /** 任务 id（由工作台创建任务时写入 Brief 的「任务 ID」）。 */
   taskId: string
   /** action=stage：阶段键（analyzing / planning / building / reviewing）。 */
   stageKey?: string
   stageIndex?: number
   stageTotal?: number
+  /** action=stage：阶段说明；action=material：读取失败原因（error 文案）。 */
   detail?: string
   /** action=outline：页面结构（标题必填，其余可选）。 */
   pages?: OutlinePage[]
   /** action=artifact：产物类型与路径。 */
   artifactType?: 'pptx' | 'pdf' | 'html'
   artifactPath?: string
+  /** action=material：素材 id（Brief 内嵌素材清单中的 id）。 */
+  materialId?: string
+  /** action=material：读取结果——ready=已读通，error=读失败（原因走 detail）。 */
+  materialStatus?: 'ready' | 'error'
   /** action=needs-input：需要用户回答的具体问题。 */
   question?: string
   /** action=fail：失败阶段与原因。 */
@@ -354,6 +360,9 @@ export interface PptsTaskResult {
   outlineVersion?: number
   confirmedOutlineVersion?: number
   pageCount?: number
+  /** action=material：被更新的素材 id 与其新状态（回执，便于 Agent 核对）。 */
+  materialId?: string
+  materialStatus?: 'ready' | 'error'
 }
 
 /** 阶段键 → 任务状态（面板据此渲染阶段时间线）。 */
@@ -416,6 +425,31 @@ export function runTask(params: PptsTaskParams): PptsTaskResult {
         const saved = addArtifact(taskId, { type, path, status: 'ready' })
         return { ok: true, message: `产物已登记：${type} → ${path}`, taskId, status: saved.status }
       }
+      case 'material': {
+        const materialId = String(params.materialId ?? '').trim()
+        if (materialId === '') return { ok: false, message: 'action=material 需要 materialId（Brief 内嵌素材清单中的 id）' }
+        const materialStatus = params.materialStatus
+        if (materialStatus !== 'ready' && materialStatus !== 'error') {
+          return { ok: false, message: 'action=material 需要 materialStatus（ready = 已读通 / error = 读失败）' }
+        }
+        const saved = setMaterialStatus(
+          taskId,
+          materialId,
+          materialStatus,
+          params.detail === undefined ? undefined : String(params.detail),
+        )
+        const name = saved.materials.find(item => item.id === materialId)?.name ?? materialId
+        return {
+          ok: true,
+          message: materialStatus === 'error'
+            ? `素材读取失败已记录：${name}（用户可在工作台重试或删除该素材后继续）`
+            : `素材已读通：${name}`,
+          taskId,
+          status: saved.status,
+          materialId,
+          materialStatus,
+        }
+      }
       case 'needs-input': {
         const question = String(params.question ?? '').trim()
         if (question === '') return { ok: false, message: 'action=needs-input 需要 question' }
@@ -432,8 +466,7 @@ export function runTask(params: PptsTaskParams): PptsTaskResult {
         const failed = appendEvent(taskId, 'fail', reason)
         return { ok: true, message: `已记录失败：${reason}（可重试当前阶段）`, taskId, status: failed.status }
       }
-      case 'get':
-      default:
+      case 'get': {
         return {
           ok: true,
           message: task.status === 'waiting-outline'
@@ -444,6 +477,14 @@ export function runTask(params: PptsTaskParams): PptsTaskResult {
           outlineVersion: task.outlineVersion,
           confirmedOutlineVersion: task.confirmedOutlineVersion ?? 0,
           pageCount: task.outline?.pages.length ?? 0,
+        }
+      }
+      default:
+        // 未知 action 不再静默等同 get：拼错时返回一份「任务状态」会被 Agent 当成上报成功
+        // （例如把 outline 写成 outlines），而这恰恰是最需要立刻失败、而不是看起来成功的时刻。
+        return {
+          ok: false,
+          message: `未知 action：${String(params.action)}（支持 stage/outline/artifact/material/needs-input/fail/get）`,
         }
     }
   } catch (error) {
@@ -460,23 +501,27 @@ export const pptsTaskTool: DshToolDefinition = {
     'action=outline 提交页面大纲（{title,purpose,bullets,pageType}[]）——提交后任务转入「等待确认大纲」，' +
     '你必须立即停止后续生成，等用户在工作台确认；' +
     'action=get 读取当前状态与 confirmedOutlineVersion（收到「大纲已确认」消息后可先用它核对）；' +
-    'action=artifact 登记产物路径；action=needs-input 请求用户补充信息；action=fail 记录失败原因与可恢复动作。',
+    'action=artifact 登记产物路径；action=needs-input 请求用户补充信息；action=fail 记录失败原因与可恢复动作；' +
+    'action=material 回报素材读取结果（materialId + materialStatus）——读成功报 ready，' +
+    '读失败报 error 并用 detail 附原因，用户即可在工作台重试或删除该素材。',
   parameters: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['stage', 'outline', 'artifact', 'needs-input', 'fail', 'get'],
-        description: 'stage=上报阶段；outline=提交大纲并停下等确认；artifact=登记产物；needs-input=请求补充；fail=记录失败；get=读取状态',
+        enum: ['stage', 'outline', 'artifact', 'material', 'needs-input', 'fail', 'get'],
+        description: 'stage=上报阶段；outline=提交大纲并停下等确认；artifact=登记产物；material=回报素材读取结果；needs-input=请求补充；fail=记录失败；get=读取状态',
       },
       taskId: { type: 'string', description: '任务 id（Brief 中的「任务 ID」）' },
       stageKey: { type: 'string', description: 'action=stage：阶段键（analyzing / planning / building / reviewing）' },
       stageIndex: { type: 'number', description: 'action=stage：当前阶段序号（从 1 起）' },
       stageTotal: { type: 'number', description: 'action=stage：阶段总数' },
-      detail: { type: 'string', description: 'action=stage：当前阶段的具体说明（面板会展示）' },
+      detail: { type: 'string', description: 'action=stage：当前阶段的具体说明（面板会展示）；action=material 且 materialStatus=error：读取失败原因' },
       pages: { type: 'array', items: { type: 'object' }, description: 'action=outline：页面数组，每页 {id?,title,purpose?,bullets?,pageType?}' },
       artifactType: { type: 'string', enum: ['pptx', 'pdf', 'html'], description: 'action=artifact：产物类型' },
       artifactPath: { type: 'string', description: 'action=artifact：产物绝对路径' },
+      materialId: { type: 'string', description: 'action=material：素材 id（Brief 内嵌素材清单中的 id）' },
+      materialStatus: { type: 'string', enum: ['ready', 'error'], description: 'action=material：ready=素材已读通；error=读取失败（用 detail 附原因）' },
       question: { type: 'string', description: 'action=needs-input：需要用户回答的问题' },
       reason: { type: 'string', description: 'action=fail：失败原因（面板展示并可重试）' },
     },
@@ -494,6 +539,8 @@ export const pptsTaskTool: DshToolDefinition = {
         outlineVersion: { type: 'number' },
         confirmedOutlineVersion: { type: 'number' },
         pageCount: { type: 'number' },
+        materialId: { type: 'string', description: 'action=material：被更新的素材 id' },
+        materialStatus: { type: 'string', description: 'action=material：素材新状态（ready / error）' },
       },
       required: ['ok', 'message'],
     },

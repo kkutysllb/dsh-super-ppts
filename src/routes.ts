@@ -16,6 +16,7 @@
  * 流式落盘、限额即断，失败不留半截文件（见 templates.writeUploadTemp）。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { existsSync } from 'node:fs'
 import { BUILTIN_TEMPLATES } from './builtin-templates.js'
 import {
   TemplateStoreError,
@@ -28,13 +29,16 @@ import {
   writeUploadTemp,
 } from './templates.js'
 import {
+  TASK_STATUSES,
   TaskStoreError,
   confirmOutline,
   createTask,
   deleteTask,
   listTasks,
   loadTask,
+  removeMaterial,
   saveOutline,
+  setMaterialStatus,
   updateTask,
   writeMaterial,
   type ListTasksFilter,
@@ -197,7 +201,14 @@ export function buildPptsApiHandlers(): Record<string, (payload: unknown) => unk
       const record = payload as Record<string, unknown> | null
       const filter: ListTasksFilter = {}
       const status = record?.status
-      if (typeof status === 'string' && status !== '') filter.status = status as TaskStatus
+      // 状态白名单：非法值直接 400，而不是原样透传给 listTasks —— 拼错状态（buiding）
+      // 会被过滤器全部拒掉、静默返回空列表，在面板上表现为「任务全丢了」，排查成本极高。
+      if (status !== undefined && status !== null && status !== '') {
+        if (typeof status !== 'string' || !(TASK_STATUSES as readonly string[]).includes(status)) {
+          throw new PptsRouteError('bad-request', `未知任务状态：${String(status)}（限 ${TASK_STATUSES.join(' / ')}）`)
+        }
+        filter.status = status as TaskStatus
+      }
       const workspaceId = record?.workspaceId
       if (typeof workspaceId === 'string' && workspaceId !== '') filter.workspaceId = workspaceId
       return { tasks: listTasks(filter) }
@@ -206,7 +217,16 @@ export function buildPptsApiHandlers(): Record<string, (payload: unknown) => unk
       const id = requireString(payload, 'id')
       const task = loadTask(id)
       if (task === null) throw new PptsRouteError('not-found', `任务不存在：${id}`, 404)
-      return task
+      // 产物存在性投影（只读）：产物文件在工作区，用户可能移走 / 删除，甚至只是外置盘没挂载。
+      // 每次读详情按 existsSync 重算 status，面板才能提示「产物缺失，可重新生成」。
+      // 刻意不落盘：读路径不产生写副作用，文件恢复原位后状态自然回到 ready。
+      return {
+        ...task,
+        artifacts: task.artifacts.map(item => ({
+          ...item,
+          status: existsSync(item.path) ? 'ready' as const : 'missing' as const,
+        })),
+      }
     },
     'tasks.create': (payload) => {
       const record = payload as Record<string, unknown> | null
@@ -249,6 +269,25 @@ export function buildPptsApiHandlers(): Record<string, (payload: unknown) => unk
       const version = record?.version
       if (typeof version !== 'number') throw new PptsRouteError('bad-request', 'missing or invalid "version"')
       return confirmOutline(requireString(payload, 'id'), version)
+    },
+    // 素材变更面：删除（失败素材可删掉后继续，见规格失败模式表）与状态回报
+    // （Agent 读取素材后回写 ready / error，面板据此显示「解析失败 · 可重试或删除」）。
+    'tasks.materialDelete': (payload) => {
+      return removeMaterial(requireString(payload, 'id'), requireString(payload, 'materialId'))
+    },
+    'tasks.materialStatus': (payload) => {
+      const record = payload as Record<string, unknown> | null
+      const status = record?.status
+      // 白名单前置校验：非法状态一旦透传，存储层虽会抛错，但错误码语义不如这里直白。
+      if (status !== 'ready' && status !== 'error') {
+        throw new PptsRouteError('bad-request', `未知素材状态：${String(status)}（限 ready / error）`)
+      }
+      return setMaterialStatus(
+        requireString(payload, 'id'),
+        requireString(payload, 'materialId'),
+        status,
+        optionalString(payload, 'error'),
+      )
     },
   }
 }
