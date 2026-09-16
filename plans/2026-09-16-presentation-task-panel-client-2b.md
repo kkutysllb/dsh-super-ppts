@@ -1397,3 +1397,83 @@ git commit -m "chore: release 1.4.0 (task panel full lifecycle)"
 ## 执行方式
 
 Subagent-Driven：每个任务一个全新实现者 subagent（前台串行——共享 `scripts/smoke-plugin.mjs`），控制器逐任务独立复核（build+smoke + grep 源码锚点 + 反向验证抽查），实现者自述不作数。顺序：Task 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8。Task 3（大纲视图）体量最大，允许实现者分两段提交（3a 纯函数 / 3b 视图），但两段都必须各自全绿。
+
+---
+
+## ⚠️ 实现后审查修订（2026-09-16，最终集成审查裁决，权威——优先于正文相应代码块与断言；原文保留供追溯）
+
+交付后最终集成审查在本计划产物上发现 2 个 merge 拦截项 + 3 个 minor，全部按以下
+裁决修复（提交：`7c95672` / `b42b162` / `de73989`，文档随 `docs(plan)` commit）。
+
+### R1【blocker】详情视图每次 render 重建组件类型 → 轮询每 3s remount 丢用户编辑
+
+- **根因**：Task 6 壳层分发内联 `React.createElement(makeOutlineReviewView(t, detail), viewProps)`
+  三处（~1290 区）。工厂每次 render 返回**新函数对象 = 新组件类型**，真 React 按
+  type 身份 unmount/remount；轮询 tick 的 `setActive` 必触发 re-render → 大纲视图
+  未保存编辑每 3 秒被静默重置。**stub React 单渲染架构测不到**（不重复渲染组件）——
+  这正是冒烟全绿仍漏掉的原因。
+- **修复（三视图 + 壳层协同）**：
+  1. 三视图工厂（`makeOutlineReviewView` / `makeProgressView` / `makeResultView`）
+     把工厂级 `task` 及依赖 task 的派生值（outline 的 `savedPages`、progress 的
+     `status/cancelable/failEvent/questionEvent`、result 的 `artifacts`）移入组件
+     函数体，每渲染读 live 数据；读取契约 **props 优先、opts 兜底**
+     （`p.task !== undefined ? p.task : opts.task`，回调同法——`undefined` 视为
+     未传，回落 opts / 默认 noop）。`api` / `sendToSession` 保持工厂级（壳层传
+     稳定引用）。既有视图冒烟断言（`makeX(t, opts)({})` 形态）零改动兼容。
+  2. 大纲 dirty 基线去 `React.useRef(savedPages)` 手管：基线 = 当前渲染 task 的
+     `outline.pages` 派生值。行为连带：`saveOnly()` 成功后
+     `setNotice(t("saved")); onUpdated(saved)`（saved 为 tasks.outline 返回记录，
+     含新 outlineVersion，宿主 setActive 前移基线）；400 resync 分支保留
+     `setPages(clonePages(next.outline.pages))`（编辑器载入 Agent 新版本）+
+     `setResync(true)` + 追加 `onUpdated(next)`（既有「重取 tasks.get +
+     sp-outline-resync」断言不回归）。
+  3. 壳层新增模块级纯函数 `ensureDetailView(cacheRef, sub, taskId, make)`：组件
+     类型按 `sub + "|" + taskId` 缓存于 `useRef`；分发处 `var detailRef =
+     React.useRef(null)` + `ensureDetailView(detailRef, sub, active.id, function
+     (which){…工厂…})`。`onBackToOutline` / `openSession` 仅 progress 传（其余
+     传 undefined → 视图回落 noop）；两者每渲染新建闭包读当前 active，无陈旧闭包。
+- **冒烟**：新增「实现后审查修正（Fix 1）」块 7 断言（ensureDetailView 复用/重建
+  计数、三视图 props 优先、两静态锚点、saveOnly→onUpdated）+ 哨兵 pair
+  `ensureDetailView`。Task 6 旧静态锚点「三工厂 createElement 调用点」**正是被修复
+  的 remount 根因形态**，删除并由新锚点「无内联工厂调用（防 remount）」+「经
+  ensureDetailView 缓存组件类型」取代。
+- **反向验证**：分发还原内联工厂 → 两锚点 FAIL；outline 改回 `opts.task` →
+  props 优先断言 FAIL；均还原后全绿。
+
+### R2【major】completed 全链路不可达（host 缺口；文件边界的授权例外）
+
+- **根因**：`ppts_task` 的 `STAGE_STATUS` 无 `completed` 映射，且无任何其它动作可
+  置 completed（src/tools.ts case 清单实证），而 `buildContinuePrompt` 要求 Agent
+  「将任务状态推进到 completed」→ 正常流程永远停在 `building`：轮询永不停止、
+  结果视图（`completed → result`）不可达。本计划的「host 零改动」前提在此处失配：
+  host 缺一个**被规格要求、被实现遗漏**的动作。
+- **裁决（编排者已定）**：host 增补 `done` 动作——这是 Plan 2b 硬规则 3 文件边界
+  （禁改 `src/tools.ts` / `src/index.ts`）的**获授权例外**，依据 = 最终集成审查
+  裁决 + 规格「状态全集」中 completed 的可达性要求。提交
+  `b42b162`（本 commit src 与 lib 编译产物同入，不再拆 `chore: rebuild lib`，
+  保持 bisect 绿）。
+- **执行**：`case 'done'` = `setStatus(taskId, 'completed')` 回执（message 提示
+  产物请先用 artifact 登记）；`PptsTaskParams.action` 联合类型、schema enum、工具
+  description、未知 action 提示、STAGE_STATUS 注释（completed 刻意不是阶段）全部
+  同步；`SUPER_PPTS_GUIDANCE` 教学句补「产物登记后用 done 动作将任务标记为
+  completed」；`buildContinuePrompt` 第三行改为「…并用 done 动作将任务标记为
+  completed。」（Task 2 既有 `artifact`/`completed` 断言保持绿）。
+- **冒烟**：host 段 +4 断言（done→completed + 状态事件、done 未知任务
+  ok:false、enum 含 done、description 教学 done）。
+
+### R3-R5【minor，随修】
+
+- **R3 摘要措辞按形态分流**：字典 `resultSummary`（原 `{format}` 直填格式原值）
+  拆为 `resultSummaryPptx`（已完成 · {pages} 页 · 可编辑 PPTX）/ `resultSummaryHtml`
+  （… HTML 在线演示），en 同构；`makeResultView` 按 `task.brief.format` 选键，
+  locale 未命中回退 zh 同名模板。Task 5 摘要断言改为 PPTX/HTML 分流双判别 +
+  i18n 键列表换双键。
+- **R4 轮询对已删任务不空转**：`startTaskPolling` tick 的 catch 分流——message
+  匹配 `/not-found|不存在|HTTP 404/` → `return false` 停轮询；其它错误维持
+  「一次失败不杀死轮询」（既有 boom 断言不回归）。+2 断言（HTTP 404 / 「不存在」）。
+- **R5 孤儿哨兵补齐**：pairs 追加 `progressSteps` / `lastEventOfKind` /
+  `copyText` / `routeSubView` / `openTaskRecord` 五对（src 侧参考声明均已在位，
+  纯对账，无新增代码）。
+
+**收尾计数**：R1-R5 全落地后 `npm run build && npm run smoke` = **290 PASS / 0 FAIL**
+（发布基线 277：R1 +7−1、R2 +4、R3-R5 +3，哨兵 pair 扩至 47 对不另计）。
