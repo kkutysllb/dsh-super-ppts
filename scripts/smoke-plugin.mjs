@@ -293,24 +293,47 @@ const tasksMod = await import('../lib/tasks.js')
   check('损坏任务留底 .corrupt-*',
     readdirSync(tasksMod.taskDir(corrupt.id)).some(name => name.startsWith('task.json.corrupt-')))
 
-  for (let i = 0; i < tasksMod.MAX_INDEX_TASKS + 5; i += 1) {
-    tasksMod.createTask({
+  // 索引无损：55 > 旧的 50 条上限。旧实现按 updatedAt 裁剪索引，会把最早的任务挤出且永久不可见。
+  const BULK_TASKS = 55
+  const bulkIds = []
+  for (let i = 0; i < BULK_TASKS; i += 1) {
+    bulkIds.push(tasksMod.createTask({
       title: '批量 ' + i,
       brief: { topic: 't', format: 'pptx' },
       workspace: { id: 'w', name: 'w', path: '/p' },
-    })
+    }).id)
   }
-  check('索引按上限裁剪（= MAX_INDEX_TASKS）',
-    tasksMod.loadIndex().tasks.length === tasksMod.MAX_INDEX_TASKS, String(tasksMod.loadIndex().tasks.length))
+  const diskTaskDirs = readdirSync(tasksMod.TASKS_ROOT, { withFileTypes: true })
+    .filter(entry => entry.isDirectory()).length
+  const indexEntries = tasksMod.loadIndex().tasks.length
+  check('索引无损（条目数 === 磁盘任务目录数，不再按上限裁剪）',
+    indexEntries === diskTaskDirs, `index=${indexEntries} disk=${diskTaskDirs}`)
+  check('曾被挤出索引的早期任务仍可见（listTasks 全量返回）',
+    tasksMod.listTasks().some(item => item.id === bulkIds[0]))
 
+  // 可区分场景：更新的 creating 任务 vs 更旧的 waiting-outline 任务。
+  // 若优先级表被旁路、退化成纯时间排序，creating 会排在前 —— 这条断言才有鉴别力。
   const waiting = tasksMod.createTask({
     title: '待确认',
     brief: { topic: 't', format: 'pptx' },
     workspace: { id: 'w', name: 'w', path: '/p' },
   })
   tasksMod.saveOutline(waiting.id, [{ title: '第一页' }])
+  const fresh = tasksMod.createTask({
+    title: '更新但无需用户处理',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  // saveOutline 会把 updatedAt 刷成当前时间：用 saveTask 把「等待确认」压成更旧的时间戳，
+  // 否则两个任务时间相近，断言会被「时间新」蒙过。
+  const staleStamp = new Date(Date.now() - 3600_000).toISOString()
+  tasksMod.saveTask({ ...tasksMod.requireTask(waiting.id), updatedAt: staleStamp })
   const priority = tasksMod.listTasks()
-  check('列表按恢复优先级排序（等待确认排最前）', priority[0]?.id === waiting.id, String(priority[0]?.status))
+  const freshEntry = priority.find(item => item.id === fresh.id)
+  check('列表按恢复优先级排序（更旧的 waiting-outline 排在更新的 creating 之前）',
+    priority[0]?.id === waiting.id && priority[0]?.status === 'waiting-outline'
+      && freshEntry?.updatedAt > staleStamp,
+    `top=${priority[0]?.status}@${priority[0]?.updatedAt} / creating@${freshEntry?.updatedAt}`)
 
   const target = tasksMod.createTask({
     title: '待删除',
@@ -321,6 +344,21 @@ const tasksMod = await import('../lib/tasks.js')
   tasksMod.deleteTask(target.id)
   check('deleteTask 移除索引与任务目录',
     !existsSync(targetDir) && !tasksMod.loadIndex().tasks.some(item => item.id === target.id))
+
+  // index.json 损坏留底分支（此前零覆盖）：写坏 → 不抛错、留底 *.corrupt-*、从磁盘任务目录重建
+  const probe = tasksMod.createTask({
+    title: '索引重建探针',
+    brief: { topic: 't', format: 'pptx' },
+    workspace: { id: 'w', name: 'w', path: '/p' },
+  })
+  writeFileSync(tasksMod.TASK_INDEX_FILE, '{oops 坏索引', 'utf8')
+  let indexSurvived = true
+  let recovered = { tasks: [] }
+  try { recovered = tasksMod.loadIndex() } catch { indexSurvived = false }
+  check('index.json 损坏 → 留底 *.corrupt-* 并从磁盘任务目录重建',
+    indexSurvived && recovered.tasks.some(item => item.id === probe.id)
+      && readdirSync(tasksMod.TASKS_ROOT).some(name => name.startsWith('index.json.corrupt-')),
+    `rebuilt=${recovered.tasks.length}`)
 }
 
 disposeRoutes()
