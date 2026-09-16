@@ -38,7 +38,7 @@ export declare class PptsRouteError extends Error {
 }
 /** 信任围栏：Host header loopback / trustedHosts 精确匹配才放行。 */
 export declare function fenceRequest(req: IncomingMessage, trustedHosts: readonly string[]): boolean;
-/** JSON 操作面：method → handler（templates.* / prefs.*）。 */
+/** JSON 操作面：method → handler（templates.* / prefs.* / tasks.*）。 */
 export declare function buildPptsApiHandlers(): Record<string, (payload: unknown) => unknown>;
 export interface PptsRoutesOptions {
     /** 上传体积上限（字节；来自插件 Config.uploadLimitMb）。 */
