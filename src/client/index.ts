@@ -354,10 +354,55 @@ export function buildTaskPrompt(task: {
   return lines.join('\n')
 }
 
-/** 最近任务视图工厂（Task 7 实现；真实形态见 lib/client.js 的 makeRecentView）。 */
+/**
+ * 任务索引条目（client 侧类型参考，形状镜像 host 的 `TaskIndexEntry`）：
+ * `tasks.list` 返回的列表元素，列表渲染只读它（host 侧不逐任务读盘）。
+ * `format` 目前只用于展示，`makeRecentView` 未消费它（保留给 Plan 2b 的筛选行）。
+ */
+export interface PptsTaskIndexEntry {
+  id: string
+  title: string
+  status: string
+  format?: string
+  workspaceId?: string
+  workspaceName?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
+/**
+ * 最近任务视图选项（Task 7 已交付；真实形态见 lib/client.js 的 makeRecentView）。
+ * tasks / loadErr / refresh 由面板壳共享的任务列表状态注入；onOpen / onNewTask
+ * 是**恢复落点判定**的注入点（默认实现只返回 viewForStatus(status) / SP_VIEW_NEW，
+ * Plan 2b 把它们接到视图状态机的 outline / progress / result 三个落点）。
+ */
+export interface PptsRecentViewOptions {
+  tasks?: PptsTaskIndexEntry[]
+  /** 列表加载失败原因（非空即渲染错误态 sp-recent-error，而不是伪装成空列表）。 */
+  loadErr?: string
+  refresh?(): Promise<unknown>
+  /** 打开任务（sp-task-open 的 onClick 载荷）；默认返回 viewForStatus(task.status)。 */
+  onOpen?(task: PptsTaskIndexEntry | null): string
+  /** 空态引导去向；默认返回 SP_VIEW_NEW。 */
+  onNewTask?(): string
+}
+
+/**
+ * 最近任务视图工厂（Task 7 已交付；真实形态见 lib/client.js 的 makeRecentView）。
+ * 返回的组件视图根自持 `sp-view-recent`，结构（className 是断言契约）：
+ * 按 statusGroupOf 分四组，容器依次 `sp-group-attention` / `sp-group-active` /
+ * `sp-group-failed` / `sp-group-done`（数组顺序即渲染顺序——待处理优先，
+ * **空分组不渲染**），组标题文案键 groupAttention / groupActive / groupFailed /
+ * groupDone；条目 `sp-task-item` = 标题 `sp-task-title` + 状态徽标 `sp-task-status` +
+ * 工作区名 `sp-work-name` + 更新时间 `sp-task-time` + 打开按钮 `sp-task-open`
+ * （`onOpen(task)`，本任务只做 viewForStatus 判定，落点由 Plan 2b 接）。
+ * 空列表渲染 `sp-recent-empty`（文案 recentEmpty）；loadErr 非空渲染
+ * `sp-recent-error` + 重试按钮 `sp-recent-retry`（文案 retry，点击 refresh）。
+ * 未归类状态（cancelled / 未知）并入 active 容器，徽标仍显示真实状态。
+ */
 export function makeRecentView(
   t: (key: string, params?: Record<string, unknown>) => string,
-  options: Record<string, unknown>,
+  options: PptsRecentViewOptions,
 ): (props?: Record<string, unknown>) => unknown {
   return function RecentView() { return null }
 }

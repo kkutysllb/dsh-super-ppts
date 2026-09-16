@@ -896,6 +896,7 @@ vm.runInNewContext(clientSource, sandboxGlobal)
     ['viewForStatus', 'viewForStatus'],                               // 任务状态 → 恢复落点视图
     ['statusGroupOf', 'statusGroupOf'],                               // 任务状态 → 分组(最近任务)
     ['makeNewTaskView', 'makeNewTaskView'],                           // 新建任务视图(Task 3;视图根自持类名)
+    ['makeRecentView', 'makeRecentView'],                             // 最近任务视图(Task 7;状态分组,待处理优先)
     ['makeTemplatePicker', 'makeTemplatePicker'],                     // 模板选择器(Task 4;内置+用户分组,来源文本可辨)
     ['buildBriefFrom', 'buildBriefFrom'],                             // brief 组装(templateId 三态保真)
     ['createTask', 'createTask'],                                     // 任务落盘桥(Task 6 起为 createTaskAndStart 第 1 步)
@@ -1642,6 +1643,59 @@ vm.runInNewContext(clientSource, sandboxGlobal)
   }
   check('编排：断言后 fetch 已复原（两处引用都与断言前一致）',
     globalThis.fetch === originalFetch && sandboxGlobal.fetch === originalSandboxFetch)
+}
+
+/* ═══ client 最近任务视图：待处理优先 + 状态可扫（Task 7）═══
+   stub 无重渲染（useState 变化不会触发再渲染），因此断言走「直接构建 tasks
+   数组 + 直接调用 makeRecentView 工厂」，不模拟点击后观察状态；点击行为本身
+   只断言「按钮真的挂了 onClick」。 */
+{
+  const t = (key) => key
+  const recentOpts = (over) => Object.assign(
+    { tasks: [], loadErr: '', refresh: function () { return Promise.resolve() } },
+    over,
+  )
+  const groupEls = (tree) => collectElements(renderTree(tree))
+    .filter(el => classOf(el).indexOf('sp-group-') === 0)
+  const view = loadedModule.__testHooks.makeRecentView(t, recentOpts({
+    tasks: [
+      { id: 'k1', title: 'Q3 经营复盘', status: 'waiting-outline', format: 'pptx', workspaceName: '季度汇报', updatedAt: '2026-09-16T04:00:00.000Z' },
+      { id: 'k2', title: '产品发布演示', status: 'building', format: 'html', workspaceName: '产品', updatedAt: '2026-09-16T05:00:00.000Z' },
+      { id: 'k3', title: '技术分享', status: 'completed', format: 'pptx', workspaceName: '技术', updatedAt: '2026-09-15T05:00:00.000Z' },
+      { id: 'k4', title: '失败的任务', status: 'failed', format: 'pptx', workspaceName: '技术', updatedAt: '2026-09-15T06:00:00.000Z' },
+    ],
+  }))
+  const tree = view({})
+  // 空分组不渲染：只留一条已完成任务时，四个分组容器里只应出现 done 一个
+  const doneOnly = groupEls(loadedModule.__testHooks.makeRecentView(t, recentOpts({
+    tasks: [{ id: 'k3', title: '技术分享', status: 'completed', format: 'pptx', workspaceName: '技术', updatedAt: '2026-09-15T05:00:00.000Z' }],
+  }))({}))
+  check('最近任务：按状态分组渲染且空分组不渲染（待处理 / 进行中 / 失败 / 已完成）',
+    renderedByClass(tree, 'sp-group-attention').length === 1
+      && renderedByClass(tree, 'sp-group-active').length === 1
+      && renderedByClass(tree, 'sp-group-failed').length === 1
+      && renderedByClass(tree, 'sp-group-done').length === 1
+      && doneOnly.length === 1 && classOf(doneOnly[0]) === 'sp-group-done')
+  check('最近任务：待处理分组排在最前',
+    groupEls(tree).length === 4 && classOf(groupEls(tree)[0]) === 'sp-group-attention')
+  check('最近任务：每条显示标题/状态/工作区且可点击恢复',
+    renderedByClass(tree, 'sp-task-item').length === 4
+      && renderedByClass(tree, 'sp-task-open').length === 4
+      && renderedByClass(tree, 'sp-task-open').every(el => typeof el.props.onClick === 'function')
+      && renderedByClass(tree, 'sp-task-status').length === 4
+      && renderedByClass(tree, 'sp-work-name').length === 4
+      && renderedText(tree).includes('Q3 经营复盘')
+      && renderedText(tree).includes('季度汇报')
+      && renderedText(tree).includes('taskStatusWaitingOutline'))
+  check('最近任务：空列表给出可执行引导（而不是空白）',
+    renderedText(loadedModule.__testHooks.makeRecentView(t, recentOpts())({})).includes('recentEmpty')
+      && groupEls(loadedModule.__testHooks.makeRecentView(t, recentOpts())({})).length === 0)
+  const errTree = loadedModule.__testHooks.makeRecentView(t, recentOpts({ loadErr: 'boom' }))({})
+  check('最近任务：错误态可重试',
+    renderedByClass(errTree, 'sp-recent-error').length === 1
+      && renderedByClass(errTree, 'sp-recent-retry').length === 1
+      && renderedByClass(errTree, 'sp-recent-retry').every(el => typeof el.props.onClick === 'function')
+      && renderedText(errTree).includes('recentError'))
 }
 
 /** 伪 File：client 只用到 name 与流式 body，测试里给最小替身。 */
