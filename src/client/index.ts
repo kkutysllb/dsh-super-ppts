@@ -88,7 +88,7 @@
  *    options = { builtin, user, onPick, onClose }——内置来自 host 的
  *    builtinTemplates，用户来自 templates（默认项由视图按 defaultTemplate 标
  *    isDefault）。分组容器 sp-tpl-group-builtin / sp-tpl-group-user，卡片
- *    sp-tpl-card + 占位预览 sp-tpl-thumb（内置取 accent，用户取中性灰）+
+ *    sp-tpl-card + 缩略图 sp-tpl-thumb（内置 thumbSvg→data URI img，回退 accent；用户中性灰）+
  *    来源标签 sp-tpl-source（文本 tplBuiltin / tplUser，**不依赖颜色**）+
  *    默认标记 sp-tpl-default + 使用按钮 sp-tpl-use；筛选 sp-tpl-filter
  *    （全部/插件内置/我的模板）+ 搜索 sp-tpl-search 均为纯内存过滤。
@@ -944,6 +944,8 @@ export interface PptsTemplateCard {
   scenario?: string
   tags?: string[]
   accent?: string
+  /** 内置模板：16:9 版式样张（SVG 源码）——面板编为 data URI 渲染真实缩略图；缺失回退 accent 底色。 */
+  thumbSvg?: string
   /** 用户模板：是否当前默认模板（视图按 defaultTemplate 标注，渲染 sp-tpl-default）。 */
   isDefault?: boolean
 }
@@ -965,7 +967,7 @@ export interface PptsTemplatePickerOptions {
  * 结构（className 是断言契约，纯内存筛选、不发请求）：
  * 根 `sp-tpl-picker`；筛选 `sp-tpl-filter`（全部/插件内置/我的模板）+ 搜索
  * `sp-tpl-search`；分组容器 `sp-tpl-group-builtin` / `sp-tpl-group-user`；
- * 卡片 `sp-tpl-card` = 占位预览 `sp-tpl-thumb`（内置取 accent，用户取中性灰）+
+ * 卡片 `sp-tpl-card` = 缩略图 `sp-tpl-thumb`（内置 thumbSvg→data URI img，回退 accent；用户中性灰）+
  * 来源标签 `sp-tpl-source`（文本 tplBuiltin / tplUser，不依赖颜色）+ 可选默认标记
  * `sp-tpl-default` + 使用按钮 `sp-tpl-use`；「不使用模板」`sp-tpl-none` 与
  * 「跟随默认模板」`sp-tpl-follow` 是两个并列选项，另有管理入口 `sp-tpl-manage`。

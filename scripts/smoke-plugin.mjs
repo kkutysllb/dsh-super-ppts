@@ -1434,7 +1434,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     (key) => key,
     {
       builtin: [
-        { id: 'builtin-exec-review', source: 'builtin', name: '高管经营汇报', scenario: '季度汇报', tags: ['商务'], ratio: '16:9', accent: '#2F6FEB' },
+        { id: 'builtin-exec-review', source: 'builtin', name: '高管经营汇报', scenario: '季度汇报', tags: ['商务'], ratio: '16:9', accent: '#2F6FEB', thumbSvg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect width="320" height="180" fill="#1b2f57"/></svg>' },
       ],
       user: [
         { id: 't1', name: '公司品牌模板', description: '季度汇报用', isDefault: true },
@@ -1452,9 +1452,19 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       && treeText(rendered).includes('tplBuiltin') && treeText(rendered).includes('tplUser'))
   check('模板选择器：每张卡片有占位预览与名称',
     byClass(rendered, 'sp-tpl-card').length === 2
-      && byClass(rendered, 'sp-tpl-thumb').length === 2
+      && collectElements(rendered).filter(el => classOf(el) === 'sp-tpl-thumb').length === 2
       && treeText(rendered).includes('高管经营汇报')
       && treeText(rendered).includes('公司品牌模板'))
+  // 真实缩略图：内置卡带 thumbSvg → sp-tpl-thumb-img（data URI SVG）；用户卡无 → 回退占位底
+  {
+    const builtinThumb = byClass(rendered, 'sp-tpl-thumb')[0]
+    const img = findElement(builtinThumb, (el) => classOf(el) === 'sp-tpl-thumb-img')
+    check('模板缩略图：内置卡渲染 thumbSvg 为 data URI 的 <img>',
+      !!img && typeof img.props.src === 'string' && img.props.src.startsWith('data:image/svg+xml,')
+        && decodeURIComponent(img.props.src).includes('viewBox="0 0 320 180"'))
+    check('模板缩略图：无 thumbSvg 的卡片保持占位底（不渲染 img）',
+      byClass(rendered, 'sp-tpl-thumb-img').length === 1)
+  }
   check('模板选择器：默认模板有默认标记', byClass(rendered, 'sp-tpl-default').length === 1)
   check('模板选择器：「不使用模板」与「跟随默认」是两个不同选项',
     byClass(rendered, 'sp-tpl-none').length === 1
