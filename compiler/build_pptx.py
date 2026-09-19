@@ -30,10 +30,24 @@ MIN_PYTHON = (3, 10)
 PACKAGE = "pptx-designer"
 IMPORT_NAME = "pptx_designer"
 
+def _harness_home():
+    """宿主家目录：QILIN_HOME → DSH_HOME → ~/.dsh（与插件运行时的
+    lib/templates.js 同口径）。
+
+    QiLin 启动器注入 QILIN_HOME 并把 DSH_HOME 钉到同一处；DSH/KCoder 侧
+    设 DSH_HOME（KCoder 桌面端为 ~/.kcoder）；都缺席回退 ~/.dsh（历史行为，
+    兼容裸 python 直跑）。"""
+    for key in ("QILIN_HOME", "DSH_HOME"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return os.path.expanduser(os.path.join("~", ".dsh"))
+
+
 # 专属虚拟环境：PEP 668 externally-managed 解释器（Homebrew Python 等）拒绝
-# pip --user，自动安装降级落到这里。放 ~/.dsh 下（dsh 家目录，写权限无忧），
-# 跨安装位（真源仓 / 镜像 / link 安装）共享同一环境。
-VENV_DIR = os.path.expanduser(os.path.join("~", ".dsh", "venvs", "dsh-super-ppts"))
+# pip --user，自动安装降级落到这里。放宿主家目录下（写权限无忧），跨安装位
+# （真源仓 / 镜像 / link 安装）共享同一环境。
+VENV_DIR = os.path.join(_harness_home(), "venvs", "dsh-super-ppts")
 
 # 常见 soffice 安装路径（shutil.which 覆盖 PATH 内场景，这里兜底 PATH 外的典型安装位）
 # 注意：与 skills/ppts-pptx/scripts/render_pptx.py 的 probe_soffice() 保持一致——改一处同步另一处
