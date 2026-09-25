@@ -72,7 +72,22 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-super-ppts
   `qilin.bundle.patch` 原生键）。
 - **运行时解析**：dsh alpha.2 起依赖解析默认运行时模式（PR #4471），
   插件运行期导入由 profile 安装图经进程内 generation 解析；引擎包按
-  框架契约声明于 peerDependencies，由宿主安装副本统一解析。
+  框架契约声明于 peerDependencies（`peerDependenciesMeta.optional`，
+  由宿主安装副本统一解析、包管理器不自动拉取）。
+
+## 宿主兼容与契约声明（v1.4.3 起）
+
+- **目标宿主**：DSH / KCoder **0.1.7-rc.2**（0.1.7 系列契约层）；
+  旧宿主 0.1.5–0.1.6 走双世代软降级路径。
+- **契约层**：会话投递走 0.1.7 契约的会话桥 v4（当前会话按
+  `retainedBy.mainView` 判定、`uiWorkspace.openSession` 选中、
+  `sessions.using` 持引用递送、`conversation.input.for(actx)` 壳解析）；
+  manifest 的 `peerDependencies` 声明 `@deepseek-ai/dsh*` 五条
+  （`>=0.1.0-rc.5 <0.2.0`，含 prerelease 比较器），0.1.7 的插件版本
+  兼容门按它强校验——0.2.x 起需随新版本平移范围。
+- **slot 面**：`settings.section` / `sidebar.panellist` / `main` 三注册
+  与 0.1.7 槽位契约兼容（详见
+  [`plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md`](plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md)）。
 - **PPTX 编译链的 python 依赖**（pptx-designer）由 `--ensure-deps`
   现场安装（pip --user，PEP 668 时落 venv），与插件包的 profile
   安装图无关。

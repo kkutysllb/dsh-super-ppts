@@ -64,9 +64,10 @@ const ctx = {
 }
 
 const disposeRoutes = registerPptsRoutes(ctx, { uploadLimitBytes: 10 * 1024 * 1024 })
-check('路由已注册（api + upload + tasks/upload）',
-  routes.has('/super-ppts/api/*') && routes.has('/super-ppts/upload') && routes.has('/super-ppts/tasks/upload'))
-check('effect 已登记', effects.length === 3)
+check('路由已注册（api + upload + tasks/upload + templates/thumb）',
+  routes.has('/super-ppts/api/*') && routes.has('/super-ppts/upload') && routes.has('/super-ppts/tasks/upload')
+    && routes.has('/super-ppts/templates/thumb/*'))
+check('effect 已登记', effects.length === 4)
 
 function mockRes() {
   return new Promise((resolve) => {
@@ -179,6 +180,85 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
   check('删除成功且默认引用清理', r.json.ok && (await callApi('templates.list', {})).json.value.defaultTemplate === null)
   const filePath = join(fakeHome, '.dsh', 'super-ppts', 'templates')
   check('删除后模板目录无残留 .pptx', !existsSync(join(filePath, id + '.pptx')))
+}
+
+/* ═══ 模板缩略图（2026-09-25 真机反馈：用户模板占位底在暗色主题下像「白板」）═══
+   两级兜底：① 内嵌 docProps/thumbnail.* 提取（零进程成本，PowerPoint/WPS 保存的
+   pptx 自带）；② 渲染链首屏（soffice→pdf→pdftoppm，python-pptx 等生成的 pptx
+   只有这条路；本机无 soffice 时容忍 undefined → 客户端走主题化占位底）。 */
+{
+  const { generateTemplateThumb, thumbFileFor, addTemplate, deleteTemplate } = await import('../lib/templates.js')
+  // 最小 stored-zip 夹具（zip 条目 CRC 读取方不校验，只解析头部结构）
+  const makeStoredZip = (entries) => {
+    const parts = []; const central = []; let offset = 0
+    for (const [name, data] of Object.entries(entries)) {
+      const nameBuf = Buffer.from(name, 'utf8')
+      const local = Buffer.alloc(30)
+      local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0, 8)
+      local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22)
+      local.writeUInt16LE(nameBuf.length, 26)
+      parts.push(local, nameBuf, data)
+      const cen = Buffer.alloc(46)
+      cen.writeUInt32LE(0x02014b50, 0); cen.writeUInt16LE(20, 4); cen.writeUInt16LE(20, 6)
+      cen.writeUInt16LE(0, 10); cen.writeUInt32LE(data.length, 20); cen.writeUInt32LE(data.length, 24)
+      cen.writeUInt16LE(nameBuf.length, 28); cen.writeUInt32LE(offset, 42)
+      central.push(cen, nameBuf)
+      offset += 30 + nameBuf.length + data.length
+    }
+    const tail = Buffer.alloc(22)
+    const names = Object.keys(entries)
+    tail.writeUInt32LE(0x06054b50, 0)
+    tail.writeUInt16LE(names.length, 8); tail.writeUInt16LE(names.length, 10)
+    tail.writeUInt32LE(central.reduce((n, b) => n + b.length, 0), 12); tail.writeUInt32LE(offset, 16)
+    return Buffer.concat([...parts, ...central, tail])
+  }
+  const withThumb = makeStoredZip({
+    'docProps/thumbnail.jpeg': Buffer.concat([Buffer.from('JFIF'), Buffer.alloc(200, 3)]),
+    'ppt/presentation.xml': Buffer.from('<p/>'),
+  })
+  const tmpWith = join(fakeHome, 'thumb-with.pptx')
+  writeFileSync(tmpWith, withThumb)
+  const ext = await generateTemplateThumb(tmpWith, 'thumbtest1')
+  const thumbPath = thumbFileFor('thumbtest1')
+  check('缩略图①：内嵌 docProps/thumbnail 提取成功（jpg 落盘 + 内容一致）',
+    ext === 'jpg' && thumbPath !== null && readFileSync(thumbPath).subarray(0, 4).toString() === 'JFIF')
+
+  // addTemplate 携带 thumb 字段 → templates.list 透传；删除清理缩略图
+  const rec = await addTemplate('带缩略图模板', '', tmpWith)
+  check('上传登记携带 thumb 字段（templates.list 透传给选择器）',
+    rec.thumb === 'jpg' && loadRegistry().templates.find(t => t.id === rec.id)?.thumb === 'jpg')
+
+  // 缩略图路由：GET 出图 / 未知 id 404 / 非法 id 404（防路径穿越）
+  const callThumb = async (id, method = 'GET') => {
+    const handler = routes.get('/super-ppts/templates/thumb/*')
+    const req = { method, url: '/super-ppts/templates/thumb/' + id, headers: { host: '127.0.0.1:60864' } }
+    const out = {}
+    const mocked = { writeHead(s, h) { out.status = s; out.headers = h }, end(b) { out.body = b } }
+    await handler(req, mocked)
+    return out
+  }
+  const hit = await callThumb(rec.id)
+  check('缩略图路由：GET 出图（200 + image/jpeg + 图体）',
+    hit.status === 200 && hit.headers?.['content-type'] === 'image/jpeg'
+      && Buffer.isBuffer(hit.body) && hit.body.subarray(0, 4).toString() === 'JFIF')
+  check('缩略图路由：未知 id / 非法 id 一律 404',
+    (await callThumb('doesnotexist9')).status === 404 && (await callThumb('../secret')).status === 404)
+
+  deleteTemplate(rec.id)
+  check('删除模板清理缩略图（thumb 文件不残留）', thumbFileFor(rec.id) === null)
+
+  // ② 渲染链兜底：无内嵌预览的 zip——有 soffice 则出 jpg，缺链容忍 undefined（占位底）
+  const tmpNo = join(fakeHome, 'thumb-none.pptx')
+  writeFileSync(tmpNo, makeStoredZip({ 'ppt/presentation.xml': Buffer.from('<p/>') }))
+  const ext2 = await generateTemplateThumb(tmpNo, 'thumbtest2')
+  check('缩略图②：无内嵌预览走渲染链兜底（有链出图 / 缺链容忍占位）',
+    ext2 === undefined || ext2 === 'jpg', String(ext2))
+
+  // CSS 哨兵：占位底不再写死浅色渐变（暗色主题「白板」根因）；默认徽标对比度修复
+  const clientJsText = readFileSync(join(packageRoot, 'lib', 'client.js'), 'utf8')
+  check('模板卡占位底走主题变量（写死浅色渐变已移除）', !clientJsText.includes('#EEF1F5'))
+  check('默认徽标对比度（accent 底 + 纯白字，不再暗底暗字）',
+    clientJsText.includes('background:var(--sl-color-primary-600,#3b5fd9);color:#fff'))
 }
 
 // 存储层直查：清单原子性（存在且可解析）
@@ -815,7 +895,11 @@ const stubFetch = (url, init) => {
 // vm 沙箱的全局对象（contextified 后即 bundle 内的 globalThis）：client bundle
 // 里的裸 fetch 解析到它的 fetch 属性，因此断言需要临时替换网络层时换这里
 // ——外层 realm 的 globalThis 与 bundle 无关（两处都换仅为本文件的干净复原）。
-const sandboxGlobal = { window: sandboxWindow, console, fetch: stubFetch }
+// 计时器按浏览器实况提供（会话桥 v4 的挂载重试用 setTimeout）。
+const sandboxGlobal = {
+  window: sandboxWindow, console, fetch: stubFetch,
+  setTimeout, clearTimeout, setInterval, clearInterval,
+}
 vm.runInNewContext(clientSource, sandboxGlobal)
 {
   check('client 自注册（__ModuleLoader__.load）', loadedModule !== null && loadedModule.__id === 'dsh-super-ppts')
@@ -908,7 +992,11 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['createTask', 'createTask'],                                     // 任务落盘桥(Task 6 起为 createTaskAndStart 第 1 步)
     ['uploadMaterial', 'uploadMaterial'],                             // 素材上传(Task 5;原始流式 POST)
     ['/super-ppts/tasks/upload', '/super-ppts/tasks/upload'],         // 任务素材路由(与 host routes.ts 同路径)
-    ['sendToChatV3', 'sendToChatV3'],                                 // 会话桥 v3(Task 6;模块级,sendToChatV3(ctx,text,ws))
+    ['sendToChatV4', 'sendToChatV4'],                                 // 会话桥 v4(0.1.7 契约对齐;模块级,sendToChatV4(ctx,text,ws))
+    ['retainedBy', 'retainedBy'],                                     // 0.1.7 选择态口径:byId[id].retainedBy 持有者计数
+    ['mainView', 'mainView'],                                         // 当前会话=retain(source:'mainView') 持有者(ui-open-in-app 同口径)
+    ['openSession', 'openSession'],                                   // 0.1.7 选中面(uiWorkspace.openSession;旧面 sessions.open 兜底)
+    ['sessions.using', 'sessions.using'],                             // 0.1.7 递送持引用(回调结算期持有,scope 借代的前提)
     ['createTaskAndStart', 'createTaskAndStart'],                     // 任务启动编排(Task 6;落盘→上传→提交→状态推进)
     ['buildTaskPrompt', 'buildTaskPrompt'],                           // 投递给 Agent 的 Brief 组装(内嵌任务 ID)
     ['tasks.create', 'tasks.create'],                                 // 先落盘再启动(顺序不可颠倒)
@@ -927,6 +1015,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     ['makeProgressView', 'makeProgressView'],                         // 生成进度视图(Plan 2b Task 4;六阶段时间线+恢复变体)
     ['makeResultView', 'makeResultView'],                             // 结果视图(Plan 2b Task 5;产物引用+继续修改)
     ['sendToSession', 'sendToSession'],                               // 壳层→视图的会话消息桥(Plan 2b Task 6;apply 绑 ctx)
+    ['/super-ppts/templates/thumb', '/super-ppts/templates/thumb'],   // 模板缩略图路由(上传时生成,选择器用户卡消费)
     ['ensureDetailView', 'ensureDetailView'],                         // 详情视图组件类型缓存(实现后审查修正;防轮询 remount;props 优先 opts 兜底)
   ]
   const missing = []
@@ -935,6 +1024,44 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     if (!js.includes(jsKey)) missing.push(`lib 缺 ${jsKey}`)
   }
   check('client 双源同构哨兵（src/client/index.ts ↔ lib/client.js）', missing.length === 0, missing.join('; ').slice(0, 200))
+}
+
+/* ═══ 契约层哨兵（DSH 0.1.7-rc.2 适配）：manifest 的三道不变量 ═══
+   ① dsh/qilin 两通道 client.inject 不含已删包（@deepseek-ai/dsh-client-runtime
+      在 0.1.7 系列已移除——file-review 适配批同坑）；
+   ② peer 版本键必须含 prerelease 比较器（0.1.7 兼容门用 includePrerelease 语义，
+      裸 ^0.1.7 / ^0.1.6 这类不含 prerelease 比较器的范围会拒绝 0.1.7-rc.2——
+      KCoder upstream-0.1.7-rc.1 分析 §3.2 的行动项）；
+   ③ 每个 @deepseek-ai/dsh* peer 必须 peerDependenciesMeta.optional——实测
+      （2026-09-25）非 optional 的宽范围 peer 会让 pnpm 自动安装整棵 0.1.0-rc.8
+      时代的引擎树（448 包）进用户 profile；optional 后零拉取。 */
+{
+  const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'))
+  const channels = [['dsh', manifest.dsh], ['qilin', manifest.qilin]]
+  const runtimePkgs = channels.map(([name, ch]) => [name, ch?.client?.inject ?? []])
+  const dead = runtimePkgs.filter(([, list]) => list.some((p) => String(p).includes('dsh-client-runtime')))
+  check('契约层：两通道 client.inject 无已删包 dsh-client-runtime（0.1.7 删除）', dead.length === 0, dead.map(([n]) => n).join(','))
+  const expectPkgs = [
+    '@deepseek-ai/dsh-client-locale',
+    '@deepseek-ai/dsh-client-ui-slots',
+    '@deepseek-ai/dsh-client-ui-conversation',
+    '@deepseek-ai/dsh-client-ui-workspace',
+  ]
+  const listOk = runtimePkgs.every(([, list]) => list.length === expectPkgs.length && expectPkgs.every((p) => list.includes(p)))
+  check('契约层：两通道 client.inject 冻结为 4 个引擎包（locale/ui-slots/ui-conversation/ui-workspace）', listOk,
+    runtimePkgs.map(([n, l]) => `${n}=[${l.join(',')}]`).join(' ').slice(0, 200))
+
+  const peers = manifest.peerDependencies ?? {}
+  const meta = manifest.peerDependenciesMeta ?? {}
+  const dshPeers = Object.keys(peers).filter((k) => k === '@deepseek-ai/dsh' || k.startsWith('@deepseek-ai/dsh-'))
+  check('契约层：peer 声明覆盖 @deepseek-ai/dsh 本体', dshPeers.includes('@deepseek-ai/dsh'))
+  const bareRanges = dshPeers.filter((k) => !/[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]/.test(String(peers[k])))
+  check('契约层：每个 dsh peer 范围含 prerelease 比较器（禁裸 ^0.1.7 写法）', dshPeers.length > 0 && bareRanges.length === 0,
+    bareRanges.map((k) => `${k}=${peers[k]}`).join(' '))
+  const nonOptional = dshPeers.filter((k) => meta[k]?.optional !== true)
+  check('契约层：dsh peer 全部 optional（防 pnpm 自动安装整棵引擎树）', dshPeers.length > 0 && nonOptional.length === 0,
+    nonOptional.join(','))
+  check('契约层：版本号 1.4.3（0.1.7-rc.2 适配批）', manifest.version === '1.4.3', String(manifest.version))
 }
 
 // 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
@@ -967,7 +1094,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     check('空库输出值合规（defaultTemplate 字段缺省）', emptyViolations === undefined || emptyViolations?.length === 0, Array.isArray(emptyViolations) ? emptyViolations.join('; ').slice(0, 200) : '')
     const tmpPptx = join(fakeHome, 'tmp-check.pptx')
     writeFileSync(tmpPptx, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64, 9)]))
-    const record = addTemplate('校验模板', '', tmpPptx)
+    const record = await addTemplate('校验模板', '', tmpPptx)
     setDefaultTemplate(record.id)
     const withDefaultResult = runTemplates({})
     const withDefaultViolations = validator.value(pptsTemplatesTool.output.schema, withDefaultResult)
@@ -1465,6 +1592,18 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     check('模板缩略图：无 thumbSvg 的卡片保持占位底（不渲染 img）',
       byClass(rendered, 'sp-tpl-thumb-img').length === 1)
   }
+  // 用户卡带 item.thumb（上传时生成）→ 渲染缩略图路由的 <img>
+  {
+    const thumbPicker = loadedModule.__testHooks.makeTemplatePicker(
+      (key) => key,
+      { builtin: [], user: [{ id: 't9', name: '带图模板', thumb: 'jpg' }], onPick: function () {}, onClose: function () {} },
+    )
+    const thumbRendered = thumbPicker({})
+    const userImgs = byClass(thumbRendered, 'sp-tpl-thumb-img')
+    check('模板缩略图：用户卡 item.thumb → 渲染 /super-ppts/templates/thumb/<id>',
+      userImgs.length === 1 && String(userImgs[0].props.src).indexOf('/super-ppts/templates/thumb/t9') === 0,
+      JSON.stringify(userImgs.map((el) => el.props.src)))
+  }
   check('模板选择器：默认模板有默认标记', byClass(rendered, 'sp-tpl-default').length === 1)
   check('模板选择器：「不使用模板」与「跟随默认」是两个不同选项',
     byClass(rendered, 'sp-tpl-none').length === 1
@@ -1484,6 +1623,16 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     typeof byClass(viewRendered, 'sp-tpl-open')[0].props.onClick === 'function'
       && clientSource.includes('makeTemplatePicker(t, {')
       && byClass(viewRendered, 'sp-tpl-picker').length === 0)
+
+  // 回归钉（2026-09-25 真机）：打开选择器必须**重取模板库**——模板数据只在
+  // 视图挂载时取一次，设置页（portal 覆盖层）上传/改默认后面板不重挂，
+  // 选择器拿的是旧快照，「我的模板」看不到新上传的模板。
+  const tplListCalls = () => fetchCalls.filter((c) => String(c.url).endsWith('/super-ppts/api/templates.list')).length
+  const tplBefore = tplListCalls()
+  byClass(viewRendered, 'sp-tpl-open')[0].props.onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  check('新建任务：打开模板选择器即重取模板库（设置页上传后不重挂也能看到新模板）',
+    tplListCalls() === tplBefore + 1, `before=${tplBefore} after=${tplListCalls()}`)
 
   check('模板选择器：Task 4 Step 4 文案键齐备（双侧）',
     ['tplPickerTitle', 'tplFilterAll', 'tplFilterBuiltin', 'tplFilterUser', 'tplSearch',
@@ -1551,7 +1700,9 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       && fetchCalls[fetchCalls.length - 1].url.endsWith('/super-ppts/api/tasks.create'))
 }
 
-/* ═══ client 会话桥 v3：直接开始制作（setDraft + submit） ═══ */
+/* ═══ client 会话桥 v4 · 旧宿主面（legacy face）：setDraft + submit ═══
+   ≤0.1.6 契约：list.getSnapshot().current 直读 + sessions.open + actx.conversation
+   直取壳——v4 双世代兼容的降级路径，这些 stub 钉住它不被改没。 */
 {
   const calls = []
   const ctxStub = {
@@ -1574,20 +1725,143 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     effect(fn) { return fn() },
   }
   loadedModule.apply(ctxStub)
-  const result = await loadedModule.__testHooks.sendToChatV3(ctxStub, '任务 ID：k123\n主题：Q3 复盘', 'ws1')
-  check('会话桥 v3：把 Brief 写入会话输入框（setDraft）',
+  const result = await loadedModule.__testHooks.sendToChatV4(ctxStub, '任务 ID：k123\n主题：Q3 复盘', 'ws1')
+  check('会话桥（旧宿主面）：把 Brief 写入会话输入框（setDraft）',
     calls.some(call => typeof call.setDraft === 'string' && call.setDraft.indexOf('任务 ID：k123') !== -1))
-  check('会话桥 v3：随后自动提交（submit），用户无需回车',
+  check('会话桥（旧宿主面）：随后自动提交（submit），用户无需回车',
     calls.some(call => call.submit === true) && result === 'submitted')
-  check('会话桥 v3：setDraft 先于 submit',
+  check('会话桥（旧宿主面）：setDraft 先于 submit',
     calls.findIndex(call => call.setDraft) < calls.findIndex(call => call.submit))
 
   // 降级：输入面不可达时必须回退剪贴板，而不是静默失败
   const noInputCtx = JSON.parse(JSON.stringify({ sessions: null }))
   noInputCtx.sessions = { list: { getSnapshot: () => ({ current: 'sess-1' }) }, scope: () => undefined, create: async () => 's', open() {} }
-  const fallbackResult = await loadedModule.__testHooks.sendToChatV3(noInputCtx, 'brief text', '')
-  check('会话桥 v3：输入面不可达时降级剪贴板（返回 copied 或 none，不抛错）',
+  const fallbackResult = await loadedModule.__testHooks.sendToChatV4(noInputCtx, 'brief text', '')
+  check('会话桥（旧宿主面）：输入面不可达时降级剪贴板（返回 copied 或 none，不抛错）',
     fallbackResult === 'copied' || fallbackResult === 'none')
+}
+
+/* ═══ client 会话桥 v4（DSH 0.1.7 契约对齐）═══
+   0.1.7 契约层核实结论（本地 fork deepseek-harness@0.1.7-rc.2）：
+   - SessionListState 删除 current 字段 → 当前会话 = byId[id].retainedBy.mainView>0
+     （ui-open-in-app:55 / ui-session:443 同口径）；
+   - sessions.open() 已删 → 选中走 uiWorkspace.openSession(target)；
+   - sessions.scope(id) 只借**已 retain** 的 generation → 递送期用
+     sessions.using(id, {source}, op) 持引用（回调结算后自动 release）；
+   - 壳解析沿 conversation.input.for(actx)（uiConversation.fillDraft 同口径）。
+   以下分块钉：mainView 定位 / openWorkspace(beforeOpen) 落点 / 挂载重试 /
+   using 持有期内提交 / 无 submit 绝不报 submitted / create 路径。 */
+{
+  const calls = []
+  let usingDepth = 0
+  const mkShell = () => ({
+    setDraft(text) { calls.push({ setDraft: text, depth: usingDepth }) },
+    submit() { calls.push({ submit: true, depth: usingDepth }) },
+  })
+  const shell = mkShell()
+  const ctx = {
+    slots: { inject(slotType, loader) { loader() }, register() { return () => {} } },
+    locale: { register() { return () => {} }, bind() { return (key) => key } },
+    effect(fn) { return fn() },
+    get(name) { return name === 'conversation' ? { input: { for: () => shell } } : undefined },
+    sessions: {
+      list: {
+        getSnapshot: () => ({
+          byId: {
+            'sess-1': { id: 'sess-1', retainedBy: { mainView: 1 } },
+            'sess-2': { id: 'sess-2', retainedBy: { gateway: 1 } },
+          },
+          ids: ['sess-1', 'sess-2'], phase: 'ready',
+        }),
+      },
+      scope(id) { calls.push({ scope: id }); return {} },
+      using(id, options, operation) {
+        calls.push({ using: id, source: options && options.source })
+        usingDepth += 1
+        return Promise.resolve().then(() => operation({ sessionId: id })).finally(() => { usingDepth -= 1 })
+      },
+    },
+    workspaces: {
+      list: {
+        getSnapshot: () => ({
+          items: [
+            { workspaceId: 'ws1', title: '季度', path: '/tmp/ws1', sessionIds: ['sess-1'] },
+            { workspaceId: 'ws2', title: '发布', path: '/tmp/ws2', sessionIds: ['sess-2'] },
+          ],
+          phase: 'ready',
+        }),
+      },
+    },
+    uiWorkspace: {
+      openWorkspaceCalls: [],
+      openWorkspace(ws, beforeOpen) {
+        this.openWorkspaceCalls.push(ws)
+        if (typeof beforeOpen === 'function') beforeOpen('sess-2')
+        return Promise.resolve()
+      },
+      openSession(id) { calls.push({ openSession: id }) },
+    },
+    layout: { selectPanel() {} },
+  }
+
+  // ① 同工作区：mainView 持有者即当前会话，直接落草稿，不导航
+  const r1 = await loadedModule.__testHooks.sendToChatV4(ctx, '任务 ID：k1\n同工作区', 'ws1')
+  check('v4：当前会话按 retainedBy.mainView 定位（同工作区零导航）',
+    r1 === 'submitted' && ctx.uiWorkspace.openWorkspaceCalls.length === 0
+      && calls.some(c => c.using === 'sess-1'), JSON.stringify(calls).slice(0, 160))
+  check('v4：setDraft → submit 顺序，且全程在 using 持有期内（depth>0）',
+    calls.some(c => c.setDraft) && calls.some(c => c.submit)
+      && calls.find(c => c.setDraft).depth > 0 && calls.find(c => c.submit).depth > 0)
+  check('v4：sessions.using 以自有 source="dsh-super-ppts" 持引用递送',
+    calls.some(c => c.using === 'sess-1' && c.source === 'dsh-super-ppts'))
+
+  // ② 跨工作区：openWorkspace(beforeOpen) 拿落点会话 id，递送到目标工作区会话
+  calls.length = 0
+  const r2 = await loadedModule.__testHooks.sendToChatV4(ctx, '任务 ID：k2\n跨工作区', 'ws2')
+  check('v4：跨工作区经 uiWorkspace.openWorkspace(beforeOpen) 取落点 id',
+    r2 === 'submitted' && ctx.uiWorkspace.openWorkspaceCalls.length === 1
+      && ctx.uiWorkspace.openWorkspaceCalls[0] === 'ws2' && calls.some(c => c.using === 'sess-2'))
+
+  // ③ 挂载重试：输入壳前两次未就位（0.1.7 conversation 挂载异步），第三次可用仍须送达
+  calls.length = 0
+  let probes = 0
+  const retryCtx = Object.assign({}, ctx, {
+    get(name) {
+      if (name !== 'conversation') return undefined
+      probes += 1
+      return probes < 3 ? undefined : { input: { for: () => shell } }
+    },
+  })
+  const r3 = await loadedModule.__testHooks.sendToChatV4(retryCtx, '任务 ID：k3\n重试', 'ws1')
+  check('v4：输入壳挂载重试（前 2 次未就位 → 第 3 次送达）', r3 === 'submitted' && probes >= 3, `probes=${probes}`)
+
+  // ④ 无 submit（≤旧宿主输入面）→ 草稿照写但绝不报 submitted
+  calls.length = 0
+  const noSubmitCtx = Object.assign({}, ctx, {
+    get(name) {
+      return name === 'conversation'
+        ? { input: { for: () => ({ setDraft(text) { calls.push({ setDraft: text }) } }) } }
+        : undefined
+    },
+  })
+  const r4 = await loadedModule.__testHooks.sendToChatV4(noSubmitCtx, '任务 ID：k4\n无提交', 'ws1')
+  check('v4：输入面无 submit → 草稿写入但绝不报 submitted（降级剪贴板）',
+    r4 !== 'submitted' && (r4 === 'copied' || r4 === 'none') && calls.some(c => c.setDraft))
+
+  // ⑤ create 路径（工作区列表空）：sessions.create → uiWorkspace.openSession 选中
+  calls.length = 0
+  const createdIds = []
+  const createCtx = Object.assign({}, ctx, {
+    workspaces: { list: { getSnapshot: () => ({ items: [], phase: 'ready' }) } },
+    sessions: Object.assign({}, ctx.sessions, {
+      list: { getSnapshot: () => ({ byId: {}, ids: [], phase: 'ready' }) },
+      create: async () => { createdIds.push('sess-new'); return 'sess-new' },
+    }),
+  })
+  const r5 = await loadedModule.__testHooks.sendToChatV4(createCtx, '任务 ID：k5\n新建', '')
+  check('v4：无工作区可落点 → sessions.create 后 uiWorkspace.openSession 选中并送达',
+    r5 === 'submitted' && createdIds.length === 1
+      && calls.some(c => c.openSession === 'sess-new') && calls.some(c => c.using === 'sess-new'))
 }
 
 /* ═══ client 会话桥 v3 · 任务启动编排（Task 6 补充断言） ═══

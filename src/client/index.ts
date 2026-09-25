@@ -24,13 +24,16 @@
  *
  * 6. 草稿桥 v2（历史沿革，已随旧工作台移除）：0.1.16 正式链路——工作区选择
  *    （uiWorkspace.openWorkspace 复用/新建会话）+ 输入框程序化填充
- *    （setDraft，剪贴板降级）。会话投递现统一走 v3（见 6b：同逻辑 +
- *    自动 submit）。
+ *    （setDraft，剪贴板降级）。会话投递现统一走 v4（见 6b）。
  *
- * 6b. **会话桥 v3（Task 6 已交付，模块级 `sendToChatV3(ctx, text, workspaceId)`）**：
- *    会话定位逻辑同 v2，差别是填完草稿后**自动 `submit()`**——用户点「开始制作」
- *    任务立即启动，无需回聊天窗口回车。宿主输入面没有 `submit` 或任一步抛错时
- *    **不得假装提交成功**：一律降级剪贴板桥并返回 'copied'/'none'。
+ * 6b. **会话桥 v4（DSH 0.1.7 契约对齐，模块级 `sendToChatV4(ctx, text, workspaceId)`）**：
+ *    定位会话（当前会话 = retainedBy.mainView 持有者；跨工作区
+ *    uiWorkspace.openWorkspace(ws, beforeOpen) 取落点 id；空工作区
+ *    sessions.create() + openSession）→ sessions.using 持引用递送
+ *    （setDraft → submit，输入壳挂载迟到位按重试参数等待）。
+ *    0.1.7 契约层要点：SessionListState 无 current、sessions.open 已删、
+ *    scope(id) 只借已 retain 的 generation。宿主输入面没有 `submit` 或任一步
+ *    失败时**不得假装提交成功**：一律降级剪贴板桥并返回 'copied'/'none'。
  *    返回 'submitted' | 'copied' | 'none'。
  *
  * 7. 任务面板壳（0.1.5 sidebar.panellist + main keyed）：主面板是
@@ -46,7 +49,7 @@
  *    makeTemplatePicker），视图根**自持**容器类名
  *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动归宿主：
  *    **不自建**侧边栏 / 右侧固定栏 / 全屏容器 / 100vw / 100vh。
- *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV3
+ *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV4
  *    → createTask/createTaskAndStart/buildTaskPrompt → 轮询基元
  *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ 壳层联动纯函数
  *    （routeSubView / shouldClearForced / attentionEntries / openTaskRecord /
@@ -63,7 +66,7 @@
  *    makeNewTaskView / makeRecentView / makeTemplatePicker / buildBriefFrom /
  *    createTask / createTaskAndStart / buildTaskPrompt / outlineOps /
  *    makeOutlineReviewView / makeProgressView / progressSteps /
- *    lastEventOfKind / makeResultView / copyText / sendToChatV3 /
+ *    lastEventOfKind / makeResultView / copyText / sendToChatV4 /
  *    clipboardFallback / uploadMaterial）。
  *
  * 8. 新建任务视图（Task 3 已交付）：主题 textarea（sp-topic-input，rows 3）+
@@ -76,11 +79,12 @@
  *    multiple file input）+ 主按钮 sp-start（文案 startTask，主题 trim 为空即
  *    disabled）。brief 由 buildBriefFrom 组装，templateId 三态保真。
  *    模板入口 sp-tpl-open 已是**真实选择器**入口（Task 4，打开/关闭由视图层
- *    状态控制，折叠态不渲染选择器）；素材已接上传通道（Task 5：
+ *    状态控制，折叠态不渲染选择器；**打开时重取模板库**——设置页上传/改默认
+ *    后面板不重挂，挂载期快照会陈旧，2026-09-25 真机回归修复）；素材已接上传通道（Task 5：
  *    `uploadMaterial(taskId, file)` → POST /super-ppts/tasks/upload，视图把原始
  *    File 留在本地待上传队列，真正的上传编排由 createTaskAndStart 做）；
  *    「开始制作」走 apply 注入的桥 `bridges.createTask(input)`——Task 6 起注入的是
- *    绑定 ctx 的完整编排 createTaskAndStart（落盘 → 素材上传 → 会话桥 v3 提交 →
+ *    绑定 ctx 的完整编排 createTaskAndStart（落盘 → 素材上传 → 会话桥 v4 提交 →
  *    状态推进），phase 可为 'started'（任务已自动启动）/ 'waiting-launch'（已落盘，
  *    启动链路降级剪贴板待重试）。
  *
@@ -88,7 +92,7 @@
  *    options = { builtin, user, onPick, onClose }——内置来自 host 的
  *    builtinTemplates，用户来自 templates（默认项由视图按 defaultTemplate 标
  *    isDefault）。分组容器 sp-tpl-group-builtin / sp-tpl-group-user，卡片
- *    sp-tpl-card + 缩略图 sp-tpl-thumb（内置 thumbSvg→data URI img，回退 accent；用户中性灰）+
+ *    sp-tpl-card + 缩略图 sp-tpl-thumb（内置 thumbSvg→data URI img，回退 accent；用户 item.thumb→/super-ppts/templates/thumb/<id>，无图主题化占位）+
  *    来源标签 sp-tpl-source（文本 tplBuiltin / tplUser，**不依赖颜色**）+
  *    默认标记 sp-tpl-default + 使用按钮 sp-tpl-use；筛选 sp-tpl-filter
  *    （全部/插件内置/我的模板）+ 搜索 sp-tpl-search 均为纯内存过滤。
@@ -112,7 +116,10 @@ export interface PptsClientContext {
     register(ns: string, dicts: { zh: Record<string, string>; en: Record<string, string> }): () => void
     bind(ns: string): (key: string, params?: Record<string, unknown>) => string
   }
-  uiWorkspace?: { openWorkspace(workspaceId: string): Promise<void> }
+  uiWorkspace?: {
+    openWorkspace?(workspaceId: string, beforeOpen?: (sessionId: string) => void): Promise<void>
+    openSession?(target: string): void
+  }
   workspaces?: {
     list: {
       getSnapshot(): {
@@ -161,7 +168,7 @@ export function registerSettingsNavIcon(label: () => string): () => void {
 }
 
 /* ── 任务面板壳 / 视图状态机（与 lib/client.js 同构，以其实现为准）─────
- * 真实分层：SP_* 常量 → api / uploadMaterial / sendToChatV3 →
+ * 真实分层：SP_* 常量 → api / uploadMaterial / sendToChatV4 →
  * 轮询基元（isPollingStatus / startTaskPolling / SP_POLL_STATUSES /
  * SP_POLL_MS）→ 壳层联动纯函数（routeSubView / shouldClearForced /
  * attentionEntries / openTaskRecord / byUpdatedDesc / ensureDetailView（详情
@@ -357,8 +364,8 @@ export interface PptsPanelBridges {
   }): Promise<{ task: unknown; phase: 'started' | 'waiting-launch'; message?: string }>
   /** Task 5 已交付：素材原始流式上传（POST /super-ppts/tasks/upload?taskId=&name=）。 */
   uploadMaterial?(taskId: string, file: { name?: string; size?: number }): Promise<{ name: string; size: number; path: string }>
-  /** Task 6 已交付：会话桥 v3（模块级 `sendToChatV3(ctx, text, workspaceId)`）。 */
-  sendToChatV3?(ctx: PptsClientContext, text: string, workspaceId?: string): Promise<SendToChatV3Result>
+  /** Task 6 已交付：会话桥 v4（模块级 `sendToChatV4(ctx, text, workspaceId)`）。 */
+  sendToChatV4?(ctx: PptsClientContext, text: string, workspaceId?: string): Promise<SendToChatV4Result>
   /** Plan 2b：会话消息桥（大纲修改指令 / 继续生成 / 补充信息 / 继续修改都走它）。 */
   sendToSession?(text: string, workspaceId?: string): Promise<'submitted' | 'copied' | 'none'>
   /**
@@ -475,7 +482,7 @@ export interface PptsMaterialEntry {
  *    不阻塞启动）；
  * 3) `buildTaskPrompt(task)` 组装 Brief（内嵌「任务 ID：<id>」，上传回执的
  *    path 补进 materials，Agent 据此调 ppts_task 并先读素材）；
- * 4) `sendToChatV3` 写入并提交（自动启动）；
+ * 4) `sendToChatV4` 写入并提交（自动启动）；
  * 5) 提交成功 → 任务置 analyzing、phase 'started'；提交失败（降级剪贴板）→
  *    任务置 waiting-launch（可恢复，**不是 failed**）、phase 'waiting-launch'。
  * 本函数体只是**类型参考占位**，真实形态见 lib/client.js 同名符号。
@@ -967,7 +974,7 @@ export interface PptsTemplatePickerOptions {
  * 结构（className 是断言契约，纯内存筛选、不发请求）：
  * 根 `sp-tpl-picker`；筛选 `sp-tpl-filter`（全部/插件内置/我的模板）+ 搜索
  * `sp-tpl-search`；分组容器 `sp-tpl-group-builtin` / `sp-tpl-group-user`；
- * 卡片 `sp-tpl-card` = 缩略图 `sp-tpl-thumb`（内置 thumbSvg→data URI img，回退 accent；用户中性灰）+
+ * 卡片 `sp-tpl-card` = 缩略图 `sp-tpl-thumb`（内置 thumbSvg→data URI img，回退 accent；用户 item.thumb→/super-ppts/templates/thumb/<id>，无图主题化占位）+
  * 来源标签 `sp-tpl-source`（文本 tplBuiltin / tplUser，不依赖颜色）+ 可选默认标记
  * `sp-tpl-default` + 使用按钮 `sp-tpl-use`；「不使用模板」`sp-tpl-none` 与
  * 「跟随默认模板」`sp-tpl-follow` 是两个并列选项，另有管理入口 `sp-tpl-manage`。
@@ -981,7 +988,7 @@ export function makeTemplatePicker(
 
 /* 后续任务符号（此处仅 JSDoc 引用，实现由各自任务追加到 lib/client.js）：
  * - api(method, body)：既有实现，复用为任务数据面客户端（tasks.* / templates.list）。
- * Task 6 的 sendToChatV3 / createTaskAndStart / buildTaskPrompt 已在上文给出
+ * Task 6 的 sendToChatV4 / createTaskAndStart / buildTaskPrompt 已在上文给出
  * 类型同构形态（见各符号 JSDoc）。 */
 
 /**
@@ -1000,46 +1007,128 @@ export function uploadMaterial(
   return Promise.resolve({ name: file.name ?? 'material', size: file.size ?? 0, path: '' })
 }
 
-/** v3 会话桥结果：'submitted' = 已写入并自动提交；'copied' = 降级剪贴板；'none' = 全失败。 */
-export type SendToChatV3Result = 'submitted' | 'copied' | 'none'
+/** v4 会话桥结果：'submitted' = 已写入并自动提交；'copied' = 降级剪贴板；'none' = 全失败。 */
+export type SendToChatV4Result = 'submitted' | 'copied' | 'none'
+
+/** 0.1.7 sessions 服务消费面（contract/sessions.ts ISessions 的最小投影）。 */
+interface SessionsFace {
+  list?: { getSnapshot?(): { byId?: Record<string, { retainedBy?: Record<string, number> }>; current?: string } }
+  create?(opts?: { workspaceId?: string }): Promise<string>
+  open?(id: string): void
+  scope?(id: string): unknown
+  binding?(id: string): { ctx?: unknown } | undefined
+  using?<T>(id: string, options: { source: string }, operation: (reference: unknown) => T | Promise<T>): Promise<T>
+}
+
+/** 0.1.7 uiWorkspace 消费面（navigation.ts UiWorkspace 的最小投影）。 */
+interface UiWorkspaceFace {
+  openWorkspace?(workspaceId: string, beforeOpen?: (sessionId: string) => void): Promise<void>
+  openSession?(target: string): void
+}
 
 /**
- * 会话桥 v3（Task 6 已交付；真实形态见 lib/client.js 的
- * `function sendToChatV3(ctx, text, workspaceId)`——与 v2 不同，它是**模块级**
- * 函数，ctx 显式传入，供 createTaskAndStart 与冒烟 __testHooks 直接调用）。
+ * 当前会话 id（0.1.7 口径）：mainView 持有者优先——uiWorkspace navigation 以
+ * `retain(target, { source: 'mainView' })` 持有选择态，读
+ * `byId[id].retainedBy.mainView > 0`（ui-open-in-app / ui-session 同口径）；
+ * 旧宿主（≤0.1.6）回退 `list.getSnapshot().current` 直读。找不到返回 null。
+ * （真实形态见 lib/client.js 的 currentSessionId。）
+ */
+export function currentSessionId(sessions?: SessionsFace): string | null {
+  try {
+    const list = sessions?.list?.getSnapshot?.()
+    const byId = list?.byId
+    if (byId) {
+      for (const id of Object.keys(byId)) {
+        const row = byId[id]
+        if (row?.retainedBy && ((row.retainedBy.mainView ?? 0) > 0)) return id
+      }
+    }
+    return typeof list?.current === 'string' && list.current ? list.current : null
+  } catch { return null }
+}
+
+/**
+ * 输入壳解析（uiConversation.fillDraft 同口径）：`conversation.input.for(actx)`。
+ * 0.1.7：`scope(id)` 只借**已 retain** 的 generation（`binding(id)?.ctx` 兜底）；
+ * 旧宿主：`actx.conversation` 直读。要求 setDraft 在场；submit 单独判。
+ * （真实形态见 lib/client.js 的 inputShellFor。）
+ */
+export function inputShellFor(
+  ctx: PptsClientContext,
+  sessions: SessionsFace | undefined,
+  sessionId: string,
+): { setDraft(t: string): void; submit?(): void } | null {
+  try {
+    let actx = sessions?.scope?.(sessionId) as Record<string, unknown> | undefined
+    if (!actx) actx = sessions?.binding?.(sessionId)?.ctx as Record<string, unknown> | undefined
+    if (!actx) return null
+    const get = (ctx as unknown as { get?(name: string): unknown }).get
+    const conversation = ((typeof get === 'function' ? get.call(ctx, 'conversation') : null)
+      ?? actx.conversation) as { input?: { for?(c: unknown): { setDraft?(t: string): void; submit?(): void } } } | undefined
+    const shell = typeof conversation?.input?.for === 'function' ? conversation.input.for(actx) : null
+    return shell && typeof shell.setDraft === 'function' ? shell : null
+  } catch { return null }
+}
+
+/** 挂载重试参数：0.1.7 conversation 挂载异步，openSession 后输入壳可能迟到位。 */
+export const SP_BRIDGE_RETRIES = 6
+export const SP_BRIDGE_RETRY_MS = 200
+
+/**
+ * 写草稿 + 自动提交（带挂载重试）。返回 'submitted' | 'no-submit' | 'failed'。
+ * setDraft 先于 submit（顺序不可颠倒）；有草稿无 submit 时不假装提交成功。
+ * （真实形态见 lib/client.js 的 deliverToSession。）
+ */
+export function deliverToSession(
+  ctx: PptsClientContext,
+  sessions: SessionsFace | undefined,
+  sessionId: string,
+  text: string,
+  attempt = 0,
+): Promise<'submitted' | 'no-submit' | 'failed'> {
+  const shell = inputShellFor(ctx, sessions, sessionId)
+  if (shell) {
+    try {
+      shell.setDraft(text)
+      if (typeof shell.submit === 'function') { shell.submit(); return Promise.resolve('submitted') }
+      return Promise.resolve('no-submit')
+    } catch { /* 写入失败：按未挂载重试 */ }
+  }
+  if (attempt + 1 < SP_BRIDGE_RETRIES) {
+    return new Promise<void>((resolve) => { setTimeout(resolve, SP_BRIDGE_RETRY_MS) })
+      .then(() => deliverToSession(ctx, sessions, sessionId, text, attempt + 1))
+  }
+  return Promise.resolve('failed')
+}
+
+/**
+ * 会话桥 v4（0.1.7 契约对齐；真实形态见 lib/client.js 的
+ * `function sendToChatV4(ctx, text, workspaceId)`——模块级函数，ctx 显式传入，
+ * 供 createTaskAndStart 与冒烟 __testHooks 直接调用）。
  *
- * 与 v2 的唯一差别是最后一步：填完草稿后调用同一 shell 的 `submit()`，
- * 用户点「开始制作」任务**立即启动**，无需回聊天窗口按回车。
- *
- * 1) 会话落点（沿用 v2）：同工作区 → 当前会话；跨工作区/无会话 →
- *    uiWorkspace.openWorkspace(ws) 后取当前会话；工作区列表空 →
- *    sessions.create() + open；定位失败 → 降级。
- * 2) 写草稿：sessions.scope(id).conversation.input.for(actx).setDraft(text)。
- * 3) 提交：同一 shell 上 `submit()`（顺序不可颠倒：setDraft 先于 submit）。
- *    **若 submit 不存在或任一步抛错，不得假装提交成功**——一律降级剪贴板桥，
+ * 1) 会话落点：同工作区 → 当前会话（mainView 持有者）；跨工作区/无会话 →
+ *    uiWorkspace.openWorkspace(ws, beforeOpen)（beforeOpen 同步收到落点 id）；
+ *    工作区列表空 → sessions.create() + openSession；定位失败 → 降级。
+ * 2) 递送：`sessions.using(id, { source: 'dsh-super-ppts' }, op)` 持引用
+ *    （0.1.7 scope 借代的前提；using 缺席的旧宿主直接递送）。
+ * 3) deliverToSession：setDraft → submit，输入壳挂载迟到位按重试参数等待。
+ *    **若 submit 不存在或任一步失败，不得假装提交成功**——一律降级剪贴板桥，
  *    绝不返回 'submitted'（否则 createTaskAndStart 会把没启动的任务置成
  *    analyzing，用户以为在做其实没动）。
  * 4) 剪贴板降级=模块级 clipboardFallback(ctx, text)：'copied' | 'none'。
  */
-export async function sendToChatV3(
+export async function sendToChatV4(
   ctx: PptsClientContext,
   text: string,
   workspaceId?: string,
-): Promise<SendToChatV3Result> {
-  type Shell = { setDraft?(t: string): void; submit?(mode?: unknown): void }
-  type SessionsFace = {
-    list?: { getSnapshot?(): { current?: string } }
-    create?(opts?: { cwd?: string }): Promise<string>
-    open?(id: string): void
-    scope?(id: string): (Record<string, unknown> & { conversation?: { input?: { for?(c: unknown): Shell } } }) | undefined
-  }
+): Promise<SendToChatV4Result> {
   const sessions = (ctx as unknown as { sessions?: SessionsFace }).sessions
+  const uiWorkspace: UiWorkspaceFace | undefined = ctx.uiWorkspace
   const workspaces = ctx.workspaces
-  const uiWorkspace = ctx.uiWorkspace
   const backToChat = (): void => {
     try { (ctx as unknown as { layout?: { selectPanel?(id: unknown): void } }).layout?.selectPanel?.(null) } catch { /* 服务不可达:留在当前面板 */ }
   }
-  const fallback = async (): Promise<SendToChatV3Result> => {
+  const fallback = async (): Promise<SendToChatV4Result> => {
     let copied = false
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
@@ -1048,9 +1137,15 @@ export async function sendToChatV3(
     } catch { /* 剪贴板不可用 */ }
     if (!copied) return 'none'
     try {
-      const current = sessions?.list?.getSnapshot?.().current
+      const current = currentSessionId(sessions)
       if (!current && typeof sessions?.create === 'function') {
-        await sessions.create().then(async (id) => { try { sessions?.open?.(id) } catch { /* 已选中 */ } }).catch(() => { /* 无落点 */ })
+        await sessions.create().then(async (id) => {
+          try {
+            // 0.1.7：openSession 选中并展示（旧宿主 sessions.open）
+            if (typeof uiWorkspace?.openSession === 'function') uiWorkspace.openSession(id)
+            else sessions?.open?.(id)
+          } catch { /* 已选中 */ }
+        }).catch(() => { /* 无落点 */ })
       }
     } catch { /* 服务不可达 */ }
     backToChat()
@@ -1058,7 +1153,7 @@ export async function sendToChatV3(
   }
   try {
     if (!sessions?.list?.getSnapshot) return fallback()
-    const current = sessions.list.getSnapshot().current
+    const current = currentSessionId(sessions)
     const wsList = workspaces?.list?.getSnapshot?.() ?? null
     let wsOfCurrent: string | null = null
     if (current && wsList) {
@@ -1069,13 +1164,18 @@ export async function sendToChatV3(
     const wantsSwitch = workspaceId !== undefined && workspaceId !== '' && wsOfCurrent !== workspaceId
     let sessionId: string | null | undefined = current
     if (!current || wantsSwitch) {
-      if (uiWorkspace?.openWorkspace && wsList && wsList.items.length > 0) {
+      if (typeof uiWorkspace?.openWorkspace === 'function' && wsList && wsList.items.length > 0) {
         const target = workspaceId || wsOfCurrent || wsList.items[0].workspaceId
-        await uiWorkspace.openWorkspace(target)
-        sessionId = sessions.list.getSnapshot().current ?? null
+        let landed: string | null = null
+        // beforeOpen 同步收到落点会话 id（0.1.7 契约；被后续导航超时时跳过 → 回退 mainView 判定）
+        await uiWorkspace.openWorkspace(target, (id) => { landed = id })
+        sessionId = landed ?? currentSessionId(sessions)
       } else if (typeof sessions.create === 'function') {
         sessionId = await sessions.create()
-        try { sessions?.open?.(sessionId) } catch { /* 已选中 */ }
+        try {
+          if (typeof uiWorkspace?.openSession === 'function') uiWorkspace.openSession(sessionId)
+          else sessions?.open?.(sessionId)
+        } catch { /* 已选中 */ }
         backToChat()
       } else {
         sessionId = null
@@ -1083,18 +1183,16 @@ export async function sendToChatV3(
     }
     if (sessionId === null || sessionId === undefined) return fallback()
     backToChat()
-    const actx = sessions.scope?.(sessionId)
-    const shell = actx?.conversation?.input?.for?.(actx)
-    if (shell && typeof shell.setDraft === 'function') {
-      shell.setDraft(text)
-      // v3 的关键一步：Write 之后必须 Submit（否则退化成 v2，用户还得回车）。
-      if (typeof shell.submit === 'function') {
-        shell.submit()
-        return 'submitted'
-      }
-      // 宿主输入面没有 submit（≤旧宿主）→ 不假装提交成功，降级剪贴板。
+    const deliver = async (): Promise<SendToChatV4Result> => {
+      const outcome = await deliverToSession(ctx, sessions, sessionId as string, text)
+      return outcome === 'submitted' ? 'submitted' : fallback()
     }
-    return fallback()
+    // 0.1.7：递送期持引用（scope 借代的前提）；using 缺席（旧宿主）直接递送。
+    if (typeof sessions?.using === 'function') {
+      return await sessions!.using!(sessionId, { source: 'dsh-super-ppts' }, deliver)
+        .catch(() => fallback())
+    }
+    return await deliver()
   } catch {
     return fallback()
   }
@@ -1125,7 +1223,7 @@ export function apply(ctx: PptsClientContext): void {
       // 任务面板壳（makePanelsView(t, { api, createTask, uploadMaterial })）：
       // createTask 注入的是**绑定本 ctx 的完整编排**——
       // `function (input) { return createTaskAndStart(ctx, input) }`
-      // （Task 6：落盘 → 素材上传 → 会话桥 v3 提交 → 状态推进；单参调用形状与
+      // （Task 6：落盘 → 素材上传 → 会话桥 v4 提交 → 状态推进；单参调用形状与
       // { task, phase } 返回语义不变，真实形态见 lib/client.js）：
       // root 面板接收全局标准 props useWorkspaces（工作区选择行，
       // 选择器用法 useWorkspaces(s => s.items)；旧宿主缺失时行隐藏）。

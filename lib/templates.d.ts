@@ -32,7 +32,14 @@ export interface TemplateRecord {
     size: number;
     /** 上传时间（ISO 8601）。 */
     uploadedAt: string;
+    /**
+     * 缩略图扩展名（文件 = <id>.thumb.<ext>，与 pptx 同目录）。
+     * 缺省 = 未生成（无内嵌预览且渲染链不可用）→ 客户端走主题化占位底。
+     */
+    thumb?: TemplateThumbExt;
 }
+/** 模板缩略图扩展名联合。 */
+export type TemplateThumbExt = 'jpg' | 'png';
 /** 生成偏好（设置页可改，经 ppts_templates 打包给 agent）。 */
 export interface PptsPrefs {
     /** 默认交付形态：ask=每次询问 / pptx / html。 */
@@ -68,15 +75,22 @@ export declare function validateDescription(raw: unknown): string;
 export declare function loadRegistry(): Registry;
 /** 原子写清单：tmp + rename（进程崩溃也不会留下半截 JSON）。 */
 export declare function saveRegistry(registry: Registry): void;
+/** 模板缩略图落盘路径（按扩展名探测）；不存在返回 null。 */
+export declare function thumbFileFor(id: string): string | null;
 /**
- * 登记一个已落盘的上传临时文件：搬入模板目录并写入清单。
+ * 生成模板缩略图（best-effort）：内嵌预览提取 → 渲染链兜底 → undefined。
+ * 绝不抛错——缩略图缺失只影响外观，不影响模板可用性。
+ */
+export declare function generateTemplateThumb(pptxPath: string, id: string): Promise<TemplateThumbExt | undefined>;
+/**
+ * 登记一个已落盘的上传临时文件：搬入模板目录、生成缩略图并写入清单。
  * 调用方（上传路由）负责临时文件的校验与失败清理；本函数内的失败会
  * 尝试回滚已 rename 的正式文件，保证清单与磁盘一致。
  */
-export declare function addTemplate(name: string, description: string, tmpFile: string): TemplateRecord;
+export declare function addTemplate(name: string, description: string, tmpFile: string): Promise<TemplateRecord>;
 /** 重命名 / 改描述（只改清单，不动文件）。 */
 export declare function renameTemplate(id: string, name: string, description?: string): TemplateRecord;
-/** 删除模板：清单移除 + 默认引用清理 + 删文件（文件缺失不视为失败）。 */
+/** 删除模板：清单移除 + 默认引用清理 + 删文件与缩略图（文件缺失不视为失败）。 */
 export declare function deleteTemplate(id: string): void;
 /** 设默认模板；null = 取消默认。 */
 export declare function setDefaultTemplate(id: string | null): void;
