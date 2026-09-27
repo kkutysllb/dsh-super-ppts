@@ -257,8 +257,12 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
   // CSS 哨兵：占位底不再写死浅色渐变（暗色主题「白板」根因）；默认徽标对比度修复
   const clientJsText = readFileSync(join(packageRoot, 'lib', 'client.js'), 'utf8')
   check('模板卡占位底走主题变量（写死浅色渐变已移除）', !clientJsText.includes('#EEF1F5'))
-  check('默认徽标对比度（accent 底 + 纯白字，不再暗底暗字）',
-    clientJsText.includes('background:var(--sl-color-primary-600,#3b5fd9);color:#fff'))
+  // 徽标对比度契约（对齐 KCoder「自动化任务」页 chip 配方）：填充与墨色必须
+  // **token 成对**（interactive-bg-active 底 + label-primary 字），双主题自适应；
+  // 禁止再出现写死色对（暗底暗字 / 亮底亮字的根源）。
+  check('默认徽标对比度（token 成对填充+墨色，双主题自适应）',
+    /\.sp-tpl-default\{[^}]*background:var\(--dsw-alias-[^}]*color:var\(--dsw-alias-label-primary/.test(clientJsText)
+    && !/\.sp-tpl-default\{[^}]*#[0-9a-fA-F]{3,8}[^}]*color:#[0-9a-fA-F]{3,8}/.test(clientJsText))
 }
 
 // 存储层直查：清单原子性（存在且可解析）
@@ -1061,7 +1065,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   const nonOptional = dshPeers.filter((k) => meta[k]?.optional !== true)
   check('契约层：dsh peer 全部 optional（防 pnpm 自动安装整棵引擎树）', dshPeers.length > 0 && nonOptional.length === 0,
     nonOptional.join(','))
-  check('契约层：版本号 1.4.4（设置页菜单式版式批）', manifest.version === '1.4.4', String(manifest.version))
+  check('契约层：版本号 1.4.5（面板宽度吃满 + 滚动条/模板入口样式批）', manifest.version === '1.4.5', String(manifest.version))
 }
 
 // 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
@@ -2846,6 +2850,19 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       clientSource.includes('root.style.maxHeight = h + "px"')
       && clientSource.includes('root.style.overflowY = "auto"')
       && clientSource.includes('window.addEventListener("resize", fitToParent)'))
+    check('滚动条隐藏样式（实机反馈：保留自滚但不出轨道，scrollbar-width:none + webkit 隐轨）',
+      /\.sp-panels\{[^}]*scrollbar-width:none/.test(clientSource)
+      && clientSource.includes('.sp-panels::-webkit-scrollbar{display:none;}')
+      && !clientSource.includes('--dsh-scrollbar-width')
+      && !clientSource.includes('scrollbar-gutter:stable'))
+    check('宽度吃满宿主列（实机反馈：不限宽居中，width:100% + % 内边距随侧边栏开合自适应）',
+      /\.sp-panels\{[^}]*width:100%/.test(clientSource)
+      && !/\.sp-panels\{[^}]*max-width/.test(clientSource)
+      && /\.sp-panels\{[^}]*padding:28px clamp\(24px,4%,48px\)/.test(clientSource))
+    check('侧边栏开合自动避让：ResizeObserver 观察父容器尺寸（不依赖 window resize）',
+      clientSource.includes('new ResizeObserver(fitToParent)') && clientSource.includes('observer.observe(parent)'))
+    check('窄列容器查询避让（@container 跟宿主列宽，侧边栏打开 ≠ 视口变化）',
+      clientSource.includes('@container (max-width:640px)'))
     check('壳层任务态锚点：SP_VIEW_TASK 参与视图分发 + taskOpenFailed 错误横幅接线',
       clientSource.includes('view === SP_VIEW_TASK') && clientSource.includes('t("taskOpenFailed")'))
     check('新 i18n 键齐全（zh+en）：attentionHint / taskOpenFailed',

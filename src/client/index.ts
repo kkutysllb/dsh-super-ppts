@@ -51,8 +51,11 @@
  *    props 优先、工厂 opts 兜底）+ 共享任务列表状态。视图是
  *    「工厂返回组件」形态（makeNewTaskView / makeRecentView /
  *    makeTemplatePicker），视图根**自持**容器类名
- *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动归宿主：
- *    **不自建**侧边栏 / 右侧固定栏 / 全屏容器 / 100vw / 100vh。
+ *    （sp-view-new-task / sp-view-recent），壳层只传 props。壳层宽度与滚动：
+ *    不限宽居中（width:100% 吃满宿主 main 列，% 内边距 + @container 随侧边栏
+ *    开合自适应），自滚但**滚动条隐藏样式**（scrollbar-width:none +
+ *    ::-webkit-scrollbar 隐轨）；**不自建**侧边栏 / 右侧固定栏 / 全屏容器 /
+ *    100vw / 100vh。
  *    文件内分层：SP_* 常量 → api/uploadMaterial/clipboardFallback/sendToChatV4
  *    → createTask/createTaskAndStart/buildTaskPrompt → 轮询基元
  *    （isPollingStatus / startTaskPolling / SP_POLL_MS）→ 壳层联动纯函数
