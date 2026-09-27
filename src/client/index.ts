@@ -11,8 +11,12 @@
  *
  * 功能面（与 lib/client.js 对应）：
  * 1. 注册 `settings.section` 导航项（id: super-ppts，名称「演示文稿」）；
- * 2. 模板库管理：上传（原始流式 → POST /super-ppts/upload）、重命名/描述、
- *    设默认、删除；
+ * 2. 设置页菜单式版式（对齐 dsh-coding-sidebar SideCardSection 配方）：
+ *    - 头部：插件名 + 刷新按钮；
+ *    - 分组卡片（DSH 原生 group recipe：l2 细线边框、16px 圆角、layer-3 填充）：
+ *      模板管理（模板 CRUD 菜单行）/ 上传模板（表单菜单行）/ 偏好设置（偏好菜单行）；
+ *    - 菜单式设置行（标题/描述在左、控件在右、细分隔线）+ DSH 原生按钮/输入框/下拉；
+ *    - 配色走 --dsw-alias-* 令牌，跟随明暗主题；
  * 3. 生成偏好编辑：defaultFormat / renderReview / outputDir / styleNotes；
  * 4. 数据面 = /super-ppts/api/<method>（POST JSON，{ok,value} 信封）。
  *

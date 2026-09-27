@@ -1061,7 +1061,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   const nonOptional = dshPeers.filter((k) => meta[k]?.optional !== true)
   check('契约层：dsh peer 全部 optional（防 pnpm 自动安装整棵引擎树）', dshPeers.length > 0 && nonOptional.length === 0,
     nonOptional.join(','))
-  check('契约层：版本号 1.4.3（0.1.7-rc.2 适配批）', manifest.version === '1.4.3', String(manifest.version))
+  check('契约层：版本号 1.4.4（设置页菜单式版式批）', manifest.version === '1.4.4', String(manifest.version))
 }
 
 // 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
