@@ -14,7 +14,7 @@
  */
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
@@ -85,7 +85,9 @@ async function callApi(method, payload) {
   const req = {
     method: 'POST',
     url: '/super-ppts/api/' + method,
-    headers: { host: '127.0.0.1:60864' },
+    // 与真实 client（lib/client.js api()）同款头：JSON 操作面要求
+    // application/json content-type（CSRF 主防御，security-audit-host M3）。
+    headers: { host: '127.0.0.1:60864', 'content-type': 'application/json' },
     async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(payload ?? {}), 'utf8') },
   }
   const res = await (async () => { let resolveRes; const p = new Promise(r => resolveRes = r); 
@@ -107,6 +109,32 @@ async function callApi(method, payload) {
   const res = { writeHead(s) { captured = s }, end(body) { captured = [captured, body] } }
   await api(req, res)
   check('围栏拒绝非 loopback Host（403）', Array.isArray(captured) && captured[0] === 403)
+}
+
+// CSRF 纵深（security-audit-host M3）：JSON 操作面要求 application/json
+// content-type（跨站表单只能提交 urlencoded/multipart/text/plain，伪造不了
+// 该类型；带该类型的跨站 fetch 必触发 CORS 预检且必败）+ Origin 同源粗校验
+//（跨站攻击者的 Origin 必是异源 http(s)）。围栏或契约被漏拷时这里必须变红。
+{
+  const api = routes.get('/super-ppts/api/*')
+  const call = async (headers) => {
+    const req = {
+      method: 'POST',
+      url: '/super-ppts/api/templates.list',
+      headers: { host: '127.0.0.1:60864', ...headers },
+      async *[Symbol.asyncIterator]() {},
+    }
+    const mocked = { writeHead(s) { mocked._status = s }, end() {} }
+    await api(req, mocked)
+    return mocked._status
+  }
+  check('JSON 操作面缺 content-type 拒绝（415）', await call({}) === 415)
+  check('JSON 操作面 text/plain content-type 拒绝（415，表单 CSRF 不可达）',
+    await call({ 'content-type': 'text/plain' }) === 415)
+  check('JSON 操作面跨站 Origin 拒绝（403）',
+    await call({ 'content-type': 'application/json', origin: 'https://evil.example' }) === 403)
+  check('JSON 操作面同源 Origin 放行（200）',
+    await call({ 'content-type': 'application/json', origin: 'http://127.0.0.1:60864' }) === 200)
 }
 
 // 未知 method → 404
@@ -174,12 +202,33 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
   check('设默认成功', r.json.ok && r.json.value.defaultTemplate === id)
   r = await callApi('prefs.update', { patch: { defaultFormat: 'pptx', styleNotes: '多用图表' } })
   check('偏好更新成功（返回更新后的 prefs）', r.json.ok && r.json.value.defaultFormat === 'pptx' && r.json.value.styleNotes === '多用图表')
+  // M2/M4 消毒（security-audit-host）：outputDir 规范化、styleNotes 控制字符剔除
+  r = await callApi('prefs.update', { patch: { outputDir: '~/decks/输出' } })
+  check('outputDir 规范化落盘（~ 展开 + resolve 为绝对路径）',
+    r.json.ok && r.json.value.outputDir === join(fakeHome, 'decks', '输出'), String(r.json.value?.outputDir))
+  r = await callApi('prefs.update', { patch: { outputDir: '相对/../输出目录' } })
+  check('outputDir 相对路径 resolve 消歧（.. 段消除为绝对路径）',
+    r.json.ok && r.json.value.outputDir === resolve(process.cwd(), '输出目录'), String(r.json.value?.outputDir))
+  r = await callApi('prefs.update', { patch: { styleNotes: '克制\r\n用色\t统一\u0000收尾' } })
+  check('styleNotes 控制字符消毒（\\r 与 C0/DEL 剔除，\\n\\t 保留）',
+    r.json.ok && r.json.value.styleNotes === '克制\n用色\t统一收尾', JSON.stringify(r.json.value?.styleNotes))
   r = await callApi('prefs.update', { patch: { defaultFormat: 'bogus' } })
   check('非法偏好值拒绝', r.json.ok === false && r.status === 400)
   r = await callApi('templates.delete', { id })
   check('删除成功且默认引用清理', r.json.ok && (await callApi('templates.list', {})).json.value.defaultTemplate === null)
   const filePath = join(fakeHome, '.dsh', 'super-ppts', 'templates')
   check('删除后模板目录无残留 .pptx', !existsSync(join(filePath, id + '.pptx')))
+}
+
+// M4 名称消毒（security-audit-host）：上传时控制字符剔除（不改变行为面，
+// 只保证清单里不会留存夹带控制字符的单行文本）。登记后即删，保持清单为空。
+{
+  const r = await upload('坏\u0007名\u001f模板', '描\u000b述', pptxBytes)
+  check('上传名称/描述控制字符剔除（消毒后登记）',
+    r.status === 200 && r.json.ok === true && r.json.value.name === '坏名模板' && r.json.value.description === '描述')
+  const poisoned = (await callApi('templates.list', {})).json.value.templates.find(t => t.name === '坏名模板')
+  await callApi('templates.delete', { id: poisoned.id })
+  check('消毒样例模板已清理', (await callApi('templates.list', {})).json.value.templates.length === 0)
 }
 
 /* ═══ 模板缩略图（2026-09-25 真机反馈：用户模板占位底在暗色主题下像「白板」）═══
@@ -615,6 +664,13 @@ const tasksMod = await import('../lib/tasks.js')
   check('ppts_templates（工具面）list 附带 builtinTemplates（≥ 4）',
     toolList.ok === true && Array.isArray(toolList.builtinTemplates) && toolList.builtinTemplates.length >= 4,
     `ok=${toolList.ok} builtin=${Array.isArray(toolList.builtinTemplates) ? toolList.builtinTemplates.length : typeof toolList.builtinTemplates}`)
+
+  // M5 outDir 护栏（security-audit-host）：必须是已存在目录，起子进程前拒绝。
+  // 用真实存在的 pptx 越过「文件未找到」早退，验证护栏本身（无需 python）。
+  const { runRender } = await import('../lib/tools.js')
+  const noDir = await runRender({ pptxPath: join(packageRoot, 'demos', 'pptx-demo.pptx'), outDir: join(fakeHome, 'no-such-render-dir') })
+  check('渲染 outDir 护栏：不存在目录直接拒绝（不起子进程）',
+    noDir.ok === false && noDir.message.includes('输出目录不存在'), noDir.message)
 }
 
 /* ═══ 1.9 素材变更面（删除 / 状态）+ 产物存在性投影 ═══ */
@@ -1065,7 +1121,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   const nonOptional = dshPeers.filter((k) => meta[k]?.optional !== true)
   check('契约层：dsh peer 全部 optional（防 pnpm 自动安装整棵引擎树）', dshPeers.length > 0 && nonOptional.length === 0,
     nonOptional.join(','))
-  check('契约层：版本号 1.4.5（面板宽度吃满 + 滚动条/模板入口样式批）', manifest.version === '1.4.5', String(manifest.version))
+  check('契约层：版本号 1.4.6（peer 上界 <0.2.0→<1.0.0：0.2.1-alpha.1 兼容修复）', manifest.version === '1.4.6', String(manifest.version))
 }
 
 // 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
@@ -1285,6 +1341,23 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   mod.saveRegistry({ templates: [{ id: 'theal000001', name: '自愈模板', description: '', file: '/nonexistent/theal000001.pptx', size: 4, uploadedAt: '2026-01-01T00:00:00.000Z' }], defaultTemplate: null, prefs: { defaultFormat: 'ask', renderReview: 'deliverable-only', outputDir: '', styleNotes: '' } })
   const healed = mod.loadRegistry()
   check('清单 file 坏路径按 id 自愈', healed.templates[0]?.file === join(mod.TEMPLATE_DIR, 'theal000001.pptx'), String(healed.templates[0]?.file))
+
+  // M1 清单投毒防御（security-audit-host）：file 指向存储根之外 → 读取即重锚；
+  // 删除只清 id 白名单内拼出的规范位，绝不 rmSync 清单里的域外路径（哨兵存活）
+  const sentinelDir = mkdtempSync(join(tmpdir(), 'ppts-poison-'))
+  const sentinel = join(sentinelDir, 'precious.txt')
+  writeFileSync(sentinel, 'keep me')
+  mod.saveRegistry({ templates: [{ id: 'poison00001', name: '投毒模板', description: '', file: sentinel, size: 4, uploadedAt: '2026-01-01T00:00:00.000Z' }], defaultTemplate: null, prefs: { defaultFormat: 'ask', renderReview: 'deliverable-only', outputDir: '', styleNotes: '' } })
+  const reloaded = mod.loadRegistry()
+  check('域外 file 读取即重锚（清单不保留存储根外路径）',
+    reloaded.templates[0]?.file === join(mod.TEMPLATE_DIR, 'poison00001.pptx'), String(reloaded.templates[0]?.file))
+  mod.deleteTemplate('poison00001')
+  check('投毒记录删除只清规范位（域外哨兵文件原样保留）',
+    existsSync(sentinel) && !existsSync(join(mod.TEMPLATE_DIR, 'poison00001.pptx')))
+
+  // M1 id 白名单：白名单外 id（路径穿越形态）的记录读取时整条丢弃
+  mod.saveRegistry({ templates: [{ id: '../escape', name: '穿越', description: '', file: 'y', size: 0, uploadedAt: '2026-01-01T00:00:00.000Z' }], defaultTemplate: null, prefs: { defaultFormat: 'ask', renderReview: 'deliverable-only', outputDir: '', styleNotes: '' } })
+  check('白名单外 id 的记录读取时丢弃（拼路径前提）', mod.loadRegistry().templates.length === 0)
 }
 
 /* ═══ 5. 混合交付 Phase 1：动画嵌入脚本 ═══ */

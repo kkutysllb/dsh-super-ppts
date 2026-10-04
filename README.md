@@ -83,8 +83,9 @@ qilin plugin --profile qilin add github:kkutysllb/dsh-super-ppts
   `retainedBy.mainView` 判定、`uiWorkspace.openSession` 选中、
   `sessions.using` 持引用递送、`conversation.input.for(actx)` 壳解析）；
   manifest 的 `peerDependencies` 声明 `@deepseek-ai/dsh*` 五条
-  （`>=0.1.0-rc.5 <0.2.0`，含 prerelease 比较器），0.1.7 的插件版本
-  兼容门按它强校验——0.2.x 起需随新版本平移范围。
+  （`>=0.1.0-rc.5 <1.0.0`，含 prerelease 比较器），0.1.7 的插件版本
+  兼容门按它强校验——上界自 v1.4.6 起为 `<1.0.0`，覆盖 0.1.x 与 0.2.x 全系
+  （原 `<0.2.0` 对 `0.2.1-alpha.1` 求值为 false，会让兼容门静默禁用整个插件）。
 - **slot 面**：`settings.section` / `sidebar.panellist` / `main` 三注册
   与 0.1.7 槽位契约兼容（详见
   [`plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md`](plans/2026-09-25-dsh-0.1.7-rc.2-upgrade.md)）。
