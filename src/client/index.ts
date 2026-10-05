@@ -99,7 +99,10 @@
  *    options = { builtin, user, onPick, onClose }——内置来自 host 的
  *    builtinTemplates，用户来自 templates（默认项由视图按 defaultTemplate 标
  *    isDefault）。分组容器 sp-tpl-group-builtin / sp-tpl-group-user，卡片
- *    sp-tpl-card + 缩略图 sp-tpl-thumb（内置 thumbSvg→data URI img，回退 accent；用户 item.thumb→/super-ppts/templates/thumb/<id>，无图主题化占位）+
+ *    sp-tpl-card + 缩略图 sp-tpl-thumb（**双层**，2026-10-04 起：内置顶层真
+ *    deck 首页截图 /super-ppts/templates/builtin-thumb/<id>，404 onError 自隐藏
+ *    露出底层 thumbSvg→data URI 设计示意，再回退 accent；用户 item.thumb→
+ *    /super-ppts/templates/thumb/<id>，无图主题化占位）+
  *    来源标签 sp-tpl-source（文本 tplBuiltin / tplUser，**不依赖颜色**）+
  *    默认标记 sp-tpl-default + 使用按钮 sp-tpl-use；筛选 sp-tpl-filter
  *    （全部/插件内置/我的模板）+ 搜索 sp-tpl-search 均为纯内存过滤。
@@ -730,6 +733,12 @@ export interface PptsOutlineOptions {
  * sp-outline-save / sp-outline-revise-text / sp-outline-revise /
  * sp-revise-dirty-confirm>sp-discard-confirm(sp-revise-save·sp-revise-discard) /
  * sp-outline-confirm / sp-msg-ok·sp-msg-err / sp-outline-resync / sp-outline-empty。
+ * 样式口径（2026-10-04 重排，实机反馈「裸表单与其他视图不一致」）：契约类
+ * 各自持完整 token 配方——输入/下拉/要点域统一盒形（transparent 底 +
+ * border-l3 发丝线 + focus business-primary），页操作四钮幽灵化（delete
+ * hover error 色），添加页=虚线幽灵行，「让 Agent 修改」=描边钮（旧规则
+ * 误把它渲染成虚线容器），「确认大纲并继续生成」=主色 CTA（复用
+ * button-primary-fill/hover 令牌）；页码文案 outlinePageNoFmt（第 {n} 页 / Page {n}）。
  */
 export function makeOutlineReviewView(
   t: (key: string, params?: Record<string, unknown>) => string,

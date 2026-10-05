@@ -1,7 +1,7 @@
 import { packageRoot } from './paths.js';
 import { type PptsPrefs } from './templates.js';
 import { type BuiltinTemplate } from './builtin-templates.js';
-import { type OutlinePage, type TaskStatus } from './tasks.js';
+import { type OutlinePage, type TaskHistoryInsights, type TaskStatus } from './tasks.js';
 export { packageRoot };
 interface PythonCandidate {
     cmd: string;
@@ -47,8 +47,8 @@ export interface DshToolDefinition {
 export declare const pptsCheckTool: DshToolDefinition;
 export declare const pptsRenderTool: DshToolDefinition;
 export interface PptsTemplatesParams {
-    /** list=全部模板+偏好（默认）；detail=单条模板全量。 */
-    action?: 'list' | 'detail';
+    /** list=全部模板+偏好（默认）；detail=单条模板全量；history=生成画像（任务库聚合）。 */
+    action?: 'list' | 'detail' | 'history';
     /** action=detail 时必填：模板 id 或名称（名称精确匹配，不区分大小写）。 */
     id?: string;
 }
@@ -62,7 +62,7 @@ interface TemplateToolEntry {
     uploadedAt: string;
     isDefault: boolean;
 }
-/** 模板库查询：list 返回全部模板 + 生成偏好 + 内置模板；detail 按 id/名称取单条。 */
+/** 模板库查询：list 返回全部模板 + 生成偏好 + 内置模板；detail 按 id/名称取单条；history 返回生成画像。 */
 export declare function runTemplates(params?: PptsTemplatesParams): {
     ok: true;
     message: string;
@@ -72,6 +72,7 @@ export declare function runTemplates(params?: PptsTemplatesParams): {
     templates?: TemplateToolEntry[];
     builtinTemplates?: readonly BuiltinTemplate[];
     template?: TemplateToolEntry;
+    history?: TaskHistoryInsights;
     hint?: string;
 } | {
     ok: false;

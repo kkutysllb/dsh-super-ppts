@@ -678,6 +678,88 @@ export function listTasks(filter: ListTasksFilter = {}): TaskIndexEntry[] {
     })
 }
 
+/* ── 生成画像（ppts_templates action=history 的数据面）──
+ * 面向「Brief 确认时提默认值」：用户常用什么形态/模板/风格、大纲改过几轮。
+ * 聚合有界：只读索引 Top N（按 updatedAt）的任务记录，纯内存计算；
+ * 风格不做 CJK 分词——直接收集 brief.style 取值与去重 styleNotes（最新在前）。 */
+
+export interface TemplateUsage {
+  templateId: string
+  templateName?: string
+  source?: string
+  count: number
+}
+
+export interface TaskHistoryInsights {
+  total: number
+  byStatus: Record<string, number>
+  byFormat: { pptx: number; html: number }
+  byTemplate: TemplateUsage[]
+  /** brief.style 取值去重（最新在前，≤5）。 */
+  styleValues: string[]
+  /** styleNotes 去重（最新在前，≤5）。 */
+  styleNotes: string[]
+  /** 大纲返工率：outlineVersion > 1 的任务 / 提交过大纲的任务（0 = 无大纲任务）。 */
+  outlineReworkRate: number
+  lastCompletedAt?: string
+  /** 最近 ≤5 个主题（Brief 确认时判断「是否同题材翻新」）。 */
+  recentTopics: string[]
+}
+
+export function summarizeHistory(limit = 30): TaskHistoryInsights {
+  const entries = [...loadIndex().tasks]
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+    .slice(0, limit)
+  const insights: TaskHistoryInsights = {
+    total: 0,
+    byStatus: {},
+    byFormat: { pptx: 0, html: 0 },
+    byTemplate: [],
+    styleValues: [],
+    styleNotes: [],
+    outlineReworkRate: 0,
+    recentTopics: [],
+  }
+  const templateCounts = new Map<string, TemplateUsage>()
+  let withOutline = 0
+  let withRework = 0
+  for (const entry of entries) {
+    const record = loadTask(entry.id)
+    if (record === null) continue
+    insights.total += 1
+    insights.byStatus[record.status] = (insights.byStatus[record.status] ?? 0) + 1
+    if (record.brief?.format === 'html') insights.byFormat.html += 1
+    else insights.byFormat.pptx += 1
+    if (typeof record.brief?.templateId === 'string' && record.brief.templateId !== '') {
+      const usage = templateCounts.get(record.brief.templateId) ?? {
+        templateId: record.brief.templateId,
+        templateName: record.brief.templateName,
+        source: record.brief.templateSource,
+        count: 0,
+      }
+      usage.count += 1
+      templateCounts.set(record.brief.templateId, usage)
+    }
+    const style = typeof record.brief?.style === 'string' ? record.brief.style.trim() : ''
+    if (style !== '' && !insights.styleValues.includes(style)) insights.styleValues.push(style)
+    const notes = typeof record.brief?.styleNotes === 'string' ? record.brief.styleNotes.trim() : ''
+    if (notes !== '' && !insights.styleNotes.includes(notes)) insights.styleNotes.push(notes)
+    if (record.outlineVersion >= 1) {
+      withOutline += 1
+      if (record.outlineVersion > 1) withRework += 1
+    }
+    if (record.status === 'completed' && (insights.lastCompletedAt === undefined || record.updatedAt > insights.lastCompletedAt)) {
+      insights.lastCompletedAt = record.updatedAt
+    }
+    if (insights.recentTopics.length < 5 && record.brief?.topic) insights.recentTopics.push(record.brief.topic)
+  }
+  insights.byTemplate = [...templateCounts.values()].sort((a, b) => b.count - a.count)
+  insights.styleValues = insights.styleValues.slice(0, 5)
+  insights.styleNotes = insights.styleNotes.slice(0, 5)
+  insights.outlineReworkRate = withOutline === 0 ? 0 : Math.round((withRework / withOutline) * 100) / 100
+  return insights
+}
+
 /** 素材名安全化：只取 basename，剔除路径分隔、控制字符与首部点。 */
 export function safeMaterialName(raw: string): string {
   const base = String(raw ?? '').split(/[\\/]/).pop() ?? ''

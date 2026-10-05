@@ -28,8 +28,13 @@ metadata:
   （或用 ppts_render 工具），产出 `render_review/` 下逐页 PNG。
   渲染链不可用时（无 soffice/pdftoppm）按 `references/review-and-delivery.md`
   的降级协议处理，不得跳过验收宣告交付。
+- 结构机检：`python3 <插件包根>/skills/ppts-pptx/scripts/validate_pptx.py deck.pptx`
+  ——容器完整性 / rels 引用闭包 / 内容 QA 占位符扫描（不依赖 LibreOffice，
+  渲染链缺失的降级路径下也可用）。视觉门证明「看起来对」，机检层证明
+  「文件是健康的」——LibreOffice 能渲染 ≠ PowerPoint 能打开。
 - 动画嵌入（混合交付，显式声明才启用，见下文专章）：
-  捕获 `scripts/html_capture.py`，嵌入 `scripts/embed_animation.py`。
+  捕获 `scripts/html_capture.py`，嵌入 `scripts/embed_animation.py`；
+  页间切换写入 `scripts/add_transitions.py`（Phase 0，同样显式声明才启用）。
   `--check` 报告末尾的 ffmpeg/playwright/浏览器三行是这条链的可用性探测
   （WARN 不阻断纯 PPTX 生成）。
 
@@ -40,7 +45,7 @@ API 契约与结构化输入见 [references/content-and-api.md](references/conte
 ### 1. Brief 确认（需求契约）
 
 捕获：主题、受众、场景、期望决策/行动、语言、时长、目标页数、素材、数据来源、
-品牌规范、模板路径、图片政策、可编辑性预期。
+品牌规范、模板路径、图片政策、可编辑性预期、**是否需要演讲备注/演讲稿**。
 
 把 Brief 转成可追溯验收表，生成前给用户过目：
 
@@ -66,6 +71,9 @@ API 契约与结构化输入见 [references/content-and-api.md](references/conte
 
 每页定义：角色与目标 / 一句话要点 / 证据或内容 / 视觉形式
 （hero、图表、对比、流程、表格、卡片、代码、时间线、CTA）/ 预期密度 / 与上一页的过渡。
+Brief 要求演讲备注时，页面规划阶段就为每页起草一句话备注
+（讲什么 / 强调什么 / 怎么过渡）——构建后用 `add_speaker_notes.py` 写入，见
+[references/review-and-delivery.md](references/review-and-delivery.md)。
 避免每页都是「标题 + 项目符号」；刻意混排页型，但不为变而变。
 
 ### 4. 视觉方向
@@ -85,38 +93,69 @@ API 契约与结构化输入见 [references/content-and-api.md](references/conte
   `generate_ppt(content={...})` 结构化输入（页面目标与文案已知时）。
 - **Build Mode**（交付级首选）：需要精确坐标、自定义构图、高级图示、
   交付级视觉控制时。写可复现的 Python 生成脚本作为唯一事实源。
+  数据页按「数据与图表」决策树走（原生 chart 组件 → svg_chart → 自绘，
+  能原生不落图），见 [references/content-and-api.md](references/content-and-api.md)。
 - **VI Build**：用户提供模板/母版/品牌规范。`extract_design_dna()` 分析模板，
   保留框架页与品牌 token，同页基础上加新页，新旧页同过渲染验收。
 - **用户模板库（优先于 VI Build 的裸模板路径）**：用户说「按模板 X 制作 /
   用我的模板」，或 Brief 涉及公司模板时，先调 `ppts_templates`
   （`action=detail`，`id`=名称或模板 id）拿模板绝对路径与偏好
-  （默认交付形态 / 渲染验收策略 / 输出目录 / 风格备注），再以该 .pptx 为基底
-  走 VI Build。库为空时提示用户到 Web 设置页「演示文稿」上传并命名模板。
+  （默认交付形态 / 渲染验收策略 / 输出目录 / 风格备注）；**拿到路径后先跑
+  `template_thumbnails.py` 逐页出图并查看全部版式**（首页缩略图只够认模板，
+  不够选版式），再以该 .pptx 为基底走 VI Build。库为空时提示用户到 Web
+  设置页「演示文稿」上传并命名模板。
 
 ### 6. 构建与检视循环
 
-每次实质修订：跑脚本 → 重开 PPTX 校验 → 渲染 PDF/PNG → 对照验收表逐行检视
-→ 记录 `PASS / NEEDS_REVISION / BLOCKED` + 证据 + 下一步修订 → 循环至全部 MUST 通过。
+每次实质修订：跑脚本 → **结构机检**（validate_pptx.py：FAIL 必须先修，
+不进视觉门）→ 渲染 PDF/PNG（**只重渲有改动的页**，未动页沿用上一轮 PNG）
+→ 对照验收表逐行检视 → 记录 `PASS / NEEDS_REVISION / BLOCKED` + 证据 +
+下一步修订 → 循环至全部 MUST 通过。
 
 方向性失败（参考迁移、图片策略、构图、层级、页面架构）回到对应决策层修，
 不用局部修补糊弄；局部缺陷（溢出、对齐、对比度）才用局部修改。
-**不要只改导出的 PPTX——一切可复现修改落到生成脚本。**
+**不要只改导出的 PPTX——一切可复现修改落到生成脚本**（切换写入等后处理
+步骤除外，但调用须在交付说明中留痕）。
 
-### 7. 用户确认
+### 7. 用户确认与交付
 
 交付级任务：全量构建前确认页面规划与视觉方向；交付前确认渲染 PNG 结果。
-快速草稿可合并确认点，但 PNG 验收不可省。
+快速草稿可合并确认点，但 PNG 验收不可省。交付按「交付包」协议执行
+（[references/review-and-delivery.md](references/review-and-delivery.md)）：
+最终 `.pptx` 与导出 `.pdf` 副本**成对交付**；任务流（Brief 带「任务 ID」）内
+用 ppts_task artifact **双登记**（pptx 与 pdf 各一条），面板产物区才完整。
 
-## 混合交付：动画嵌入（Phase 1：GIF + 快照超链接）
+## 混合交付：动效与嵌入（Phase 0 切换 / Phase 1 GIF 嵌入）
 
 插件的双形态在本技能内融合：ppts-html 技能线（flowchart / arch-diagram /
 ppt-animation 等 8 形态）生产的动画 HTML，可作为素材捕获后嵌入 PPTX。
 
-### 触发硬规则（显式声明）
+### 触发硬规则（显式声明，Phase 0/1 共用）
 
-仅当 Brief **明确出现**「嵌入动画 / 动图 / GIF / 这页要动 / 交互版随附」等
-表述时才启用本流程；「内容适合动画」「加了更好」不构成触发条件——
-没说就默认纯静态 PPTX。启用后在验收表追加一行动画页需求（R-n）。
+仅当 Brief **明确出现**「嵌入动画 / 动图 / GIF / 要切换 / 要动效 / 自动翻页 /
+这页要动 / 交互版随附」等表述时才启用对应 Phase；「内容适合动画」「加了
+更好」不构成触发条件——没说就默认纯静态 PPTX。启用后在验收表追加动效
+需求行（R-n）。
+
+### Phase 0：页间切换与自动翻页（静态轻动效）
+
+写入 PML 1st edition `<p:transition>`（PowerPoint 2007+ / WPS / LibreOffice
+全兼容，不碰 p14: 扩展）：
+
+```bash
+# 全部页 fade 切换（输出 deck.trans.pptx，确认后替换原 deck）
+python3 <插件包根>/skills/ppts-pptx/scripts/add_transitions.py deck.pptx --type fade
+# 原地写入 push + 旁白自动翻页（10 秒/页，展台/伴音场景）
+python3 <插件包根>/skills/ppts-pptx/scripts/add_transitions.py deck.pptx --type push --advance-after 10 --in-place
+# 指定页：--slides 1,3-5
+```
+
+- 类型：fade（默认，最克制）/ push / wipe / cut；逐页一致，禁止花哨混排。
+- 写入后照常渲染验收（静态视图不受切换影响，确认版面无回归即可）；
+  属后处理步骤，交付说明注明「切换经 add_transitions.py 写入（类型/页码）」。
+- 自动翻页（`--advance-after`）必须与用户确认节奏：页内容多时 N 秒读不完。
+
+### Phase 1：动画嵌入（GIF + 快照超链接）
 
 ### 工作流（嵌入是构建后的独立步骤）
 

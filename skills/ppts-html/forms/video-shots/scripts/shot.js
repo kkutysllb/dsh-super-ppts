@@ -9,7 +9,9 @@
      node shot.js shot-2-5.html 26000 _t26s.png 960 540 1.2      # 26s + 相机锁定推近
      node shot.js shot-2-5.html 26000 _t26s.png raw 0 -80 1.3    # 26s + 相机原始 transform
    找不到浏览器时设环境变量 BROWSER_PATH 指定 chrome/edge 可执行文件。 */
-const fs=require('fs'),path=require('path'),{execSync}=require('child_process');
+import fs from 'node:fs';
+import path from 'node:path';
+import { execSync } from 'node:child_process';
 
 const[, ,file,targetMs,out,fx,fy,sc]=process.argv;
 if(!file||!targetMs||!out){console.error('用法: node shot.js <页面.html> <目标毫秒> <输出.png> [fx fy scale | raw tx ty scale]');process.exit(1)}

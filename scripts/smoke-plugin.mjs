@@ -12,7 +12,7 @@
  *
  * 隔离：HOME 重定向到临时目录，测试不触碰真实 ~/.dsh/super-ppts。
  */
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { readFile } from 'node:fs/promises'
@@ -64,10 +64,10 @@ const ctx = {
 }
 
 const disposeRoutes = registerPptsRoutes(ctx, { uploadLimitBytes: 10 * 1024 * 1024 })
-check('路由已注册（api + upload + tasks/upload + templates/thumb）',
+check('路由已注册（api + upload + tasks/upload + thumb + builtin-thumb）',
   routes.has('/super-ppts/api/*') && routes.has('/super-ppts/upload') && routes.has('/super-ppts/tasks/upload')
-    && routes.has('/super-ppts/templates/thumb/*'))
-check('effect 已登记', effects.length === 4)
+    && routes.has('/super-ppts/templates/thumb/*') && routes.has('/super-ppts/templates/builtin-thumb/*'))
+check('effect 已登记', effects.length === 5)
 
 function mockRes() {
   return new Promise((resolve) => {
@@ -293,6 +293,30 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
   check('缩略图路由：未知 id / 非法 id 一律 404',
     (await callThumb('doesnotexist9')).status === 404 && (await callThumb('../secret')).status === 404)
 
+  // 内置真缩略图路由（2026-10-04）：合法方向 200 出 JPEG；未知/穿越 id 一律 404
+  const callBuiltinThumb = async (id, method = 'GET') => {
+    const handler = routes.get('/super-ppts/templates/builtin-thumb/*')
+    const req = { method, url: '/super-ppts/templates/builtin-thumb/' + id, headers: { host: '127.0.0.1:60864' } }
+    const out = {}
+    const mocked = { writeHead(s, h) { out.status = s; out.headers = h }, end(b) { out.body = b } }
+    await handler(req, mocked)
+    return out
+  }
+  const firstBuiltin = (await import('../lib/builtin-templates.js')).BUILTIN_TEMPLATES[0]
+  const builtinHit = await callBuiltinThumb(firstBuiltin.id)
+  check('内置缩略图路由：合法方向 200 出 JPEG（真 deck 首页截图）',
+    builtinHit.status === 200 && builtinHit.headers?.['content-type'] === 'image/jpeg'
+      && Buffer.isBuffer(builtinHit.body) && builtinHit.body.subarray(0, 3).toString('latin1') === '\xff\xd8\xff')
+  check('内置缩略图路由：未知 id / 穿越 id 一律 404',
+    (await callBuiltinThumb('builtin-nope')).status === 404 && (await callBuiltinThumb('../secret')).status === 404)
+  const page2 = await callBuiltinThumb(firstBuiltin.id + '?page=2')
+  check('内置缩略图路由：?page=2 出第 2 页 JPEG',
+    page2.status === 200 && page2.headers?.['content-type'] === 'image/jpeg'
+      && Buffer.isBuffer(page2.body) && page2.body.length > 0)
+  check('内置缩略图路由：越界/非法页一律 404',
+    (await callBuiltinThumb(firstBuiltin.id + '?page=99')).status === 404
+      && (await callBuiltinThumb(firstBuiltin.id + '?page=abc')).status === 404)
+
   deleteTemplate(rec.id)
   check('删除模板清理缩略图（thumb 文件不残留）', thumbFileFor(rec.id) === null)
 
@@ -338,12 +362,41 @@ const pptxBytes = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.a
 {
   const builtin = await import('../lib/builtin-templates.js')
   const list = builtin.BUILTIN_TEMPLATES
-  check('内置模板 ≥ 4 个', Array.isArray(list) && list.length >= 4, String(list?.length))
+  // 2026-10-04 实机反馈「内置方向太少」：4 → 16 方向（对齐同生态最大模板面
+  // 竞品 @cola1900 的 16 套），覆盖经营/发布/技术/教学/路演/周报/营销/大屏/
+  // 极简/学术/编辑/医疗/政务/电商/ESG/工程 16 类主场景，收口为 ≥ 16
+  check('内置模板 ≥ 16 个', Array.isArray(list) && list.length >= 16, String(list?.length))
   check('内置模板字段齐备（id/name/source/scenario/tags）',
     list.every(item => typeof item.id === 'string' && item.id !== ''
       && item.source === 'builtin' && typeof item.name === 'string'
       && typeof item.scenario === 'string' && Array.isArray(item.tags)))
   check('内置模板 id 唯一', new Set(list.map(item => item.id)).size === list.length)
+  // 缩略样张哨兵：每张都是合法 16:9 SVG（viewBox 320x180 + 闭合标签）——
+  // 面板卡片把它编为 data URI，坏 SVG 会渲染成空卡
+  check('内置模板 thumbSvg 均为合法 16:9 SVG',
+    list.every(item => item.thumbSvg.startsWith('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">')
+      && item.thumbSvg.endsWith('</svg>')))
+  check('内置模板 accent 均为 hex 色（占位底回退用）',
+    list.every(item => /^#[0-9a-fA-F]{6}$/.test(item.accent)))
+  // 真 deck 缩略图资产（2026-10-04）：每个方向必须 deck + 首页截图成对在场——
+  // 面板内置卡片的缩略图真身是渲染截图（thumbSvg 只是 404 兜底示意）
+  const missingAssets = list.filter(item =>
+    !existsSync(join(packageRoot, 'skills', 'ppts-pptx', 'assets', 'builtin-decks', item.id + '.pptx'))
+    || !existsSync(join(packageRoot, 'skills', 'ppts-pptx', 'assets', 'builtin-thumbs', item.id + '.jpg')))
+  check('内置模板样例 deck + 真缩略图资产成对在场（16 方向）', missingAssets.length === 0, missingAssets.map(i => i.id).join(', '))
+  check('真缩略图是 JPEG（魔数）',
+    list.every(item => readFileSync(join(packageRoot, 'skills', 'ppts-pptx', 'assets', 'builtin-thumbs', item.id + '.jpg')).subarray(0, 3).toString('latin1') === '\xff\xd8\xff'))
+  // 样例 deck 多页（点开看完整样例）：元数据声明页数，资产页图逐页在场
+  check('内置模板 samplePages 声明 ≥ 2 且为整数',
+    list.every(item => Number.isInteger(item.samplePages) && item.samplePages >= 2))
+  const missingPages = list.filter(item => {
+    for (let p = 1; p <= item.samplePages; p += 1) {
+      const name = p === 1 ? item.id + '.jpg' : item.id + '-' + p + '.jpg'
+      if (!existsSync(join(packageRoot, 'skills', 'ppts-pptx', 'assets', 'builtin-thumbs', name))) return true
+    }
+    return false
+  })
+  check('样例 deck 逐页截图与声明页数对齐', missingPages.length === 0, missingPages.map(i => i.id).join(', '))
 }
 
 /* ═══ 1.5 任务存储层（src/tasks.ts → lib/tasks.js）═══ */
@@ -664,6 +717,19 @@ const tasksMod = await import('../lib/tasks.js')
   check('ppts_templates（工具面）list 附带 builtinTemplates（≥ 4）',
     toolList.ok === true && Array.isArray(toolList.builtinTemplates) && toolList.builtinTemplates.length >= 4,
     `ok=${toolList.ok} builtin=${Array.isArray(toolList.builtinTemplates) ? toolList.builtinTemplates.length : typeof toolList.builtinTemplates}`)
+
+  // P2-12 生成画像：action=history 聚合任务库（此时至少已有 1.7 创建的任务）
+  const toolHistory = (await import('../lib/tools.js')).runTemplates({ action: 'history' })
+  check('ppts_templates history：生成画像返回且聚合了既有任务',
+    toolHistory.ok === true && toolHistory.history !== undefined
+    && toolHistory.history.total >= 1 && toolHistory.history.byFormat.pptx >= 1
+    && typeof toolHistory.history.outlineReworkRate === 'number',
+    `total=${toolHistory.history?.total} byFormat=${JSON.stringify(toolHistory.history?.byFormat)}`)
+  const insightsDirect = tasksMod.summarizeHistory()
+  check('summarizeHistory（存储层直查）：字段齐备且最近主题在场',
+    insightsDirect.total >= 1 && Array.isArray(insightsDirect.recentTopics)
+    && insightsDirect.recentTopics.length >= 1 && insightsDirect.styleValues.length === 0,
+    `topics=${JSON.stringify(insightsDirect.recentTopics).slice(0, 80)}`)
 
   // M5 outDir 护栏（security-audit-host）：必须是已存在目录，起子进程前拒绝。
   // 用真实存在的 pptx 越过「文件未找到」早退，验证护栏本身（无需 python）。
@@ -1121,7 +1187,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   const nonOptional = dshPeers.filter((k) => meta[k]?.optional !== true)
   check('契约层：dsh peer 全部 optional（防 pnpm 自动安装整棵引擎树）', dshPeers.length > 0 && nonOptional.length === 0,
     nonOptional.join(','))
-  check('契约层：版本号 1.4.6（peer 上界 <0.2.0→<1.0.0：0.2.1-alpha.1 兼容修复）', manifest.version === '1.4.6', String(manifest.version))
+  check('契约层：版本号 1.5.0（对标整改 P0–P2 + 内置模板 16 方向真缩略图/完整样例 + host 安全加固）', manifest.version === '1.5.0', String(manifest.version))
 }
 
 // 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
@@ -1437,6 +1503,241 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   }
 }
 
+/* ═══ 5b. PPTX 结构校验 + 切换写入（P0 能力批次，2026-10-04）═══
+   validate_pptx.py 只用标准库、add_transitions.py 同——夹具用手工微型 OOXML 包
+   （不经 python-pptx），因此本块只要求 python3 在场；缺席 SKIP 不计失败。 */
+{
+  const validateScript = join(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'validate_pptx.py')
+  const transitionsScript = join(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'add_transitions.py')
+  let pyOk = true
+  try {
+    execFileSync('python3', ['--version'], { stdio: 'ignore' })
+  } catch {
+    pyOk = false
+  }
+  if (!existsSync(validateScript) || !existsSync(transitionsScript)) pyOk = false
+  if (!pyOk) {
+    console.log('SKIP  结构校验/切换写入测试（python3 / 脚本缺失）')
+  } else {
+    const dir = mkdtempSync(join(tmpdir(), 'sp-p0-smoke-'))
+    const fixtures = join(dir, 'fixtures.py')
+    // 手工微型 OOXML：必要部件 + 2 页 slide + 布局引用。三个变体：
+    // good（全绿）/ todo（占位符文本）/ dangling（presentation.rels 引用不存在的布局部件）
+    writeFileSync(fixtures, [
+      "import zipfile, sys, os",
+      "out = sys.argv[1]",
+      "CT = '<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/></Types>'",
+      "RELS = '<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"ppt/presentation.xml\"/></Relationships>'",
+      "PRES = '<?xml version=\"1.0\"?><p:presentation xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><p:sldIdLst><p:sldId id=\"256\" r:id=\"rId1\"/><p:sldId id=\"257\" r:id=\"rId2\"/></p:sldIdLst></p:presentation>'",
+      "PRES_RELS = '<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide2.xml\"/><Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"slideLayouts/slideLayout1.xml\"/></Relationships>'",
+      "def slide(text):",
+      "    return ('<?xml version=\"1.0\"?><p:sld xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>%s</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>' % text)",
+      "def build(name, slide2_text, with_layout):",
+      "    with zipfile.ZipFile(os.path.join(out, name), 'w') as z:",
+      "        z.writestr('[Content_Types].xml', CT)",
+      "        z.writestr('_rels/.rels', RELS)",
+      "        z.writestr('ppt/presentation.xml', PRES)",
+      "        z.writestr('ppt/_rels/presentation.xml.rels', PRES_RELS)",
+      "        z.writestr('ppt/slides/slide1.xml', slide('Q3 review'))",
+      "        z.writestr('ppt/slides/slide2.xml', slide(slide2_text))",
+      "        if with_layout:",
+      "            z.writestr('ppt/slideLayouts/slideLayout1.xml', '<?xml version=\"1.0\"?><p:sldLayout xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"/>')",
+      "os.makedirs(out, exist_ok=True)",
+      "build('good.pptx', 'revenue up 18 percent', True)",
+      "build('todo.pptx', 'TODO pending data', True)",
+      "build('dangling.pptx', 'revenue up 18 percent', False)",
+      "print('FIXTURES_OK')",
+    ].join('\n'))
+    const run = (script, args) => {
+      try {
+        return { code: 0, out: execFileSync('python3', [script, ...args], { encoding: 'utf8', cwd: dir }) }
+      } catch (error) {
+        return { code: error.status ?? 1, out: String(error.stdout || '') + String(error.stderr || '') }
+      }
+    }
+    try {
+      const fx = run(fixtures, [dir])
+      check('P0 夹具构建（微型 OOXML 三变体）', fx.code === 0 && fx.out.includes('FIXTURES_OK'), fx.out.slice(-200))
+
+      const good = run(validateScript, [join(dir, 'good.pptx')])
+      check('validate：干净包 PASS（exit 0）', good.code === 0 && good.out.includes('=> PASS'), good.out.slice(-200))
+      check('validate：rels 闭包与内容 QA 双过', good.out.includes('引用闭包') && good.out.includes('无残留占位符'))
+
+      const todo = run(validateScript, [join(dir, 'todo.pptx')])
+      check('validate：占位符内容 QA FAIL（exit 1）', todo.code === 1 && todo.out.includes('残留占位符'), todo.out.slice(-200))
+
+      const dangling = run(validateScript, [join(dir, 'dangling.pptx')])
+      check('validate：悬空 rels 引用 FAIL（exit 1）', dangling.code === 1 && dangling.out.includes('引用闭包'), dangling.out.slice(-200))
+
+      const selftest = run(validateScript, ['--selftest'])
+      check('validate：--selftest 内建自检 PASS', selftest.code === 0 && selftest.out.includes('selftest: PASS'))
+
+      const trans = run(transitionsScript, [join(dir, 'good.pptx'), '--type', 'fade'])
+      const transPath = join(dir, 'good.trans.pptx')
+      check('transitions：fade 写入成功（新文件产物）', trans.code === 0 && existsSync(transPath), trans.out.slice(-200))
+
+      const transValid = run(validateScript, [transPath])
+      check('transitions：写入后 validate 仍 PASS', transValid.code === 0, transValid.out.slice(-200))
+
+      // probe：断言 trans.pptx 两页各恰有一个 <p:transition> 且类型 fade
+      writeFileSync(join(dir, 'probe.py'), [
+        "import re, sys, zipfile",
+        "z = zipfile.ZipFile(sys.argv[1])",
+        "ok = True",
+        "for n in ('ppt/slides/slide1.xml', 'ppt/slides/slide2.xml'):",
+        "    xml = z.read(n).decode()",
+        "    kinds = re.findall(r'<p:transition\\b[^>]*>(<p:(\\w+)[^>]*/>)</p:transition>', xml)",
+        "    if len(kinds) != 1 or kinds[0][1] != 'fade': ok = False",
+        "print('TRANS_OK' if ok else 'TRANS_FAIL')",
+      ].join('\n'))
+      const probe = run(join(dir, 'probe.py'), [transPath])
+      check('transitions：每页恰一个 fade 元素（幂等/无残留）', probe.out.includes('TRANS_OK'), probe.out.slice(-200))
+
+      const copy = join(dir, 'inplace.pptx')
+      writeFileSync(copy, readFileSync(join(dir, 'good.pptx')))
+      run(transitionsScript, [copy, '--type', 'push', '--in-place'])
+      writeFileSync(join(dir, 'probe2.py'), [
+        "import re, sys, zipfile",
+        "xml = zipfile.ZipFile(sys.argv[1]).read('ppt/slides/slide1.xml').decode()",
+        "kind = re.findall(r'<p:transition\\b[^>]*><p:(\\w+)', xml)",
+        "print('PUSH_OK' if kind == ['push'] else 'PUSH_FAIL ' + repr(kind))",
+      ].join('\n'))
+      const inPlace = run(join(dir, 'probe2.py'), [copy])
+      check('transitions：--in-place 幂等覆盖（push 替换默认）', inPlace.out.includes('PUSH_OK'), inPlace.out.slice(-200))
+    } catch (error) {
+      check('P0 结构校验/切换写入块', false, String(error.message || error).slice(0, 220))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/* ═══ 5c. P1 能力批次：模板版式预览 / HTML 导出 / 演讲备注（2026-10-04）═══
+   依赖探明才跑：export 需 Chrome/Edge；template_thumbnails 需 soffice+pdftoppm；
+   add_speaker_notes 需 python3+python-pptx。缺席各自动 SKIP，不计失败。 */
+{
+  const exportScript = join(packageRoot, 'skills', 'ppts-html', 'scripts', 'export_html.js')
+  const tplScript = join(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'template_thumbnails.py')
+  const notesScript = join(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'add_speaker_notes.py')
+  const shotScript = join(packageRoot, 'skills', 'ppts-html', 'forms', 'video-shots', 'scripts', 'shot.js')
+  const dir = mkdtempSync(join(tmpdir(), 'sp-p1-smoke-'))
+
+  // shot.js ESM 契约回归：type:module 仓库里必须能加载（require 崩溃即红）
+  {
+    let shotOut = ''
+    let shotErr = false
+    try {
+      execFileSync('node', [shotScript], { encoding: 'utf8' })
+    } catch (error) {
+      shotOut = String(error.stdout || '') + String(error.stderr || '')
+      shotErr = true
+    }
+    const broken = shotOut.includes('require is not defined')
+    check('shot.js 模块加载（type:module 仓库 ESM 兼容，存量 require 崩溃已修）',
+      shotErr && !broken && shotOut.includes('用法: node shot.js'), shotOut.slice(0, 160))
+  }
+
+  // export_html.js：本机有 Chrome 才真跑（fixture 极简 16:9 HTML → PDF + PNG）
+  const hasBrowser = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'].some(p => existsSync(p))
+  if (!existsSync(exportScript)) {
+    console.log('SKIP  HTML 导出测试（export_html.js 缺失）')
+  } else if (!hasBrowser) {
+    console.log('SKIP  HTML 导出测试（无 Chrome/Edge）')
+  } else {
+    const page = join(dir, 'page.html')
+    writeFileSync(page, '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{width:1920px;height:1080px;background:#1b2f57;color:#fff;font:96px sans-serif;display:flex;align-items:center;justify-content:center}</style></head><body><h1>P1 export smoke</h1></body></html>')
+    const pdfOut = join(dir, 'deck.pdf')
+    const pngOut = join(dir, 'deck.png')
+    let exportErr = ''
+    try {
+      execFileSync('node', [exportScript, page, '--pdf', pdfOut, '--png', pngOut], { encoding: 'utf8', timeout: 120000 })
+    } catch (error) {
+      exportErr = String(error.stderr || error.message || error)
+    }
+    check('export_html：PDF + PNG 双产物落盘',
+      exportErr === '' && existsSync(pdfOut) && existsSync(pngOut)
+      && statSync(pdfOut).size > 500 && statSync(pngOut).size > 2000, exportErr.slice(0, 200))
+    // Chrome 把 @page 的 px 按 0.75 换算成 pt（1920x1080px → 1440x810pt），按 16:9 比例断言
+    const pdfText = readFileSync(pdfOut).toString('latin1')
+    const box = pdfText.match(/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/)
+    const ratioOk = box !== null
+      && Math.abs((Number(box[3]) - Number(box[1])) / (Number(box[4]) - Number(box[2])) - 16 / 9) < 0.01
+    check('export_html：PDF 单页 16:9（%PDF 魔数 + MediaBox 比例）',
+      pdfText.startsWith('%PDF') && ratioOk, box ? box[0] : 'MediaBox 未找到')
+  }
+
+  // template_thumbnails.py：本机有 soffice+pdftoppm 才真跑（demos 自带 5 页 deck）
+  const hasSoffice = ['/opt/homebrew/bin/soffice', '/usr/local/bin/soffice', '/usr/bin/soffice',
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice'].some(p => existsSync(p))
+  const hasPdftoppm = ['/opt/homebrew/bin/pdftoppm', '/usr/local/bin/pdftoppm', '/usr/bin/pdftoppm'].some(p => existsSync(p))
+  if (!existsSync(tplScript)) {
+    console.log('SKIP  模板版式预览测试（template_thumbnails.py 缺失）')
+  } else if (!hasSoffice || !hasPdftoppm) {
+    console.log('SKIP  模板版式预览测试（soffice / pdftoppm 缺失）')
+  } else {
+    const outDir = join(dir, 'tpl-thumbs')
+    let tplErr = ''
+    try {
+      execFileSync('python3', [tplScript, join(packageRoot, 'demos', 'pptx-demo.pptx'), '--out', outDir],
+        { encoding: 'utf8', timeout: 300000 })
+    } catch (error) {
+      tplErr = String(error.stderr || error.message || error)
+    }
+    const indexText = existsSync(join(outDir, 'index.txt')) ? readFileSync(join(outDir, 'index.txt'), 'utf8') : ''
+    check('template_thumbnails：逐页小图 + 索引落盘（demo 5 页）',
+      tplErr === '' && existsSync(join(outDir, 'page-01.png')) && existsSync(join(outDir, 'page-05.png'))
+      && indexText.includes('共 5 页'), tplErr.slice(0, 200))
+    check('template_thumbnails：索引含逐页映射', indexText.includes('第 1 页 →') && indexText.includes('第 5 页 →'))
+  }
+
+  // add_speaker_notes.py：python-pptx 在场才跑（造 2 页 deck → 写备注 → notes XML 断言）
+  {
+    let pyOk = true
+    try {
+      execFileSync('python3', ['-c', 'import pptx'], { stdio: 'ignore' })
+    } catch {
+      pyOk = false
+    }
+    if (!existsSync(notesScript)) pyOk = false
+    if (!pyOk) {
+      console.log('SKIP  演讲备注测试（python3 / python-pptx 缺失）')
+    } else {
+      const driver = join(dir, 'test_notes.py')
+      writeFileSync(driver, [
+        "import subprocess, sys, zipfile",
+        "from pptx import Presentation",
+        "deck = sys.argv[1]; script = sys.argv[2]",
+        "prs = Presentation()",
+        "prs.slides.add_slide(prs.slide_layouts[6])",
+        "prs.slides.add_slide(prs.slide_layouts[6])",
+        "prs.save(deck)",
+        "r = subprocess.run([sys.executable, script, deck, '--note', '1', '开场只讲结论', '--note', '2', '重点在第二张卡'], capture_output=True, text=True)",
+        "out = deck.replace('.pptx', '.notes.pptx')",
+        "ok = r.returncode == 0 and '已写入 2 页备注' in r.stdout and '结构校验：PASS' in r.stdout",
+        "if ok:",
+        "    z = zipfile.ZipFile(out)",
+        "    n1 = z.read('ppt/notesSlides/notesSlide1.xml').decode()",
+        "    n2 = z.read('ppt/notesSlides/notesSlide2.xml').decode()",
+        "    ok = '开场只讲结论' in n1 and '重点在第二张卡' in n2",
+        "else:",
+        "    print('DETAIL ' + (r.stdout[-200:] + r.stderr[-200:]))",
+        "print('NOTES_OK' if ok else 'NOTES_FAIL')",
+      ].join('\n'))
+      const deck = join(dir, 'deck.pptx')
+      let notesOut = ''
+      try {
+        notesOut = execFileSync('python3', [driver, deck, notesScript], { encoding: 'utf8', timeout: 120000 })
+      } catch (error) {
+        notesOut = String(error.stdout || '') + String(error.stderr || '')
+      }
+      check('add_speaker_notes：逐页备注写入 notes 页 + 写入后 validate PASS', notesOut.includes('NOTES_OK'), notesOut.slice(0, 220))
+    }
+  }
+
+  rmSync(dir, { recursive: true, force: true })
+}
+
 /* ═══ client 左侧栏接入对账（0.1.5 panellist + main keyed）═══ */
 
 {
@@ -1659,15 +1960,53 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       && collectElements(rendered).filter(el => classOf(el) === 'sp-tpl-thumb').length === 2
       && treeText(rendered).includes('高管经营汇报')
       && treeText(rendered).includes('公司品牌模板'))
-  // 真实缩略图：内置卡带 thumbSvg → sp-tpl-thumb-img（data URI SVG）；用户卡无 → 回退占位底
+  // 真实缩略图双层（2026-10-04）：内置卡 = 底层 thumbSvg data URI + 顶层真图路由
+  // <img>（404 时 onError 自隐藏露出示意）；用户卡无 thumb → 不渲染 img 走占位底
   {
     const builtinThumb = byClass(rendered, 'sp-tpl-thumb')[0]
-    const img = findElement(builtinThumb, (el) => classOf(el) === 'sp-tpl-thumb-img')
-    check('模板缩略图：内置卡渲染 thumbSvg 为 data URI 的 <img>',
-      !!img && typeof img.props.src === 'string' && img.props.src.startsWith('data:image/svg+xml,')
-        && decodeURIComponent(img.props.src).includes('viewBox="0 0 320 180"'))
-    check('模板缩略图：无 thumbSvg 的卡片保持占位底（不渲染 img）',
-      byClass(rendered, 'sp-tpl-thumb-img').length === 1)
+    const builtinImgs = collectElements(builtinThumb).filter(el => classOf(el) === 'sp-tpl-thumb-img')
+    const baseImg = builtinImgs[0]
+    check('模板缩略图：内置卡底层渲染 thumbSvg 为 data URI 的 <img>',
+      !!baseImg && typeof baseImg.props.src === 'string' && baseImg.props.src.startsWith('data:image/svg+xml,')
+        && decodeURIComponent(baseImg.props.src).includes('viewBox="0 0 320 180"'))
+    check('模板缩略图：内置卡顶层渲染真 deck 缩略图路由 <img>（404 回落示意）',
+      builtinImgs.length === 2 && typeof builtinImgs[1].props.src === 'string'
+        && builtinImgs[1].props.src.startsWith('/super-ppts/templates/builtin-thumb/')
+        && typeof builtinImgs[1].props.onError === 'function')
+    check('模板缩略图：无 thumb 的用户卡保持占位底（不渲染 img）',
+      byClass(rendered, 'sp-tpl-thumb-img').length === 2)
+  }
+  // 样例预览（2026-10-04：点开看完整样例）——内置卡预览按钮 + makeSampleView 翻页浏览器
+  {
+    const previewBtns = byClass(rendered, 'sp-tpl-preview')
+    check('模板选择器：内置卡带「预览样例」按钮（onClick 装配）',
+      previewBtns.length >= 1 && typeof previewBtns[0].props.onClick === 'function')
+    const zhT = (key) => ({ previewSample: '预览样例', sampleBack: '返回', samplePageOf: '第 {n} / {total} 页' }[key] || key)
+    const onPageCalls = []
+    let backCalled = false
+    const makeView = (page) => loadedModule.__testHooks.makeSampleView(zhT, {
+      item: { id: 'builtin-minimal', name: '极简主义', samplePages: 4 },
+      page, total: 4,
+      onBack: () => { backCalled = true },
+      onPage: (p) => onPageCalls.push(p),
+    })
+    const sampleTree = makeView(2)({})
+    check('样例浏览器：根/头/页码渲染（第 2 / 4 页）',
+      byClass(sampleTree, 'sp-sample-view').length === 1 && byClass(sampleTree, 'sp-sample-head').length === 1
+        && treeText(sampleTree).includes('第 2 / 4 页'))
+    const sampleImg = findElement(sampleTree, (el) => classOf(el) === 'sp-sample-img')
+    check('样例浏览器：图源指向内置真图路由 ?page=2',
+      !!sampleImg && String(sampleImg.props.src) === '/super-ppts/templates/builtin-thumb/builtin-minimal?page=2')
+    const prevBtn = findElement(sampleTree, (el) => classOf(el) === 'sp-sample-prev')
+    const nextBtn = findElement(sampleTree, (el) => classOf(el) === 'sp-sample-next')
+    check('样例浏览器：页 2 时 prev/next 均可点', prevBtn.props.disabled === false && nextBtn.props.disabled === false)
+    nextBtn.props.onClick()
+    check('样例浏览器：next → onPage(3)', onPageCalls.length === 1 && onPageCalls[0] === 3)
+    const prevAtFirst = findElement(makeView(1)({}), (el) => classOf(el) === 'sp-sample-prev')
+    check('样例浏览器：页 1 时 prev 禁用', prevAtFirst.props.disabled === true)
+    const backBtn = findElement(sampleTree, (el) => classOf(el) === 'sp-sample-back')
+    backBtn.props.onClick()
+    check('样例浏览器：返回回调装配', backCalled === true)
   }
   // 用户卡带 item.thumb（上传时生成）→ 渲染缩略图路由的 <img>
   {
@@ -3081,6 +3420,20 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     'sp-artifact-type', 'sp-artifact-status', 'sp-artifact-path', 'sp-artifact-copy',
     'sp-artifact-regen', 'sp-artifacts-empty', 'sp-result-continue', 'sp-result-continue-text',
     'sp-result-submit', 'sp-result-quick', 'sp-result-quick-chip',
+    // 大纲确认视图（Plan 2b Task 3 契约类名；2026-10-04 实机反馈「裸表单与其他
+    // 视图不一致」——本清单当初漏收了整个视图，裸奔无报警，现补齐收口）
+    'sp-view-outline', 'sp-back', 'sp-outline-hint', 'sp-outline-empty',
+    'sp-outline-pages', 'sp-outline-page', 'sp-page-index',
+    'sp-page-title', 'sp-page-purpose', 'sp-page-bullets', 'sp-page-type', 'sp-page-ops',
+    'sp-page-up', 'sp-page-down', 'sp-page-copy', 'sp-page-delete',
+    'sp-outline-add', 'sp-outline-dirty-banner', 'sp-outline-save',
+    'sp-outline-revise-text', 'sp-outline-revise',
+    'sp-revise-dirty-confirm', 'sp-discard-confirm', 'sp-revise-save', 'sp-revise-discard',
+    'sp-outline-confirm', 'sp-outline-resync',
+    // 样例预览（2026-10-04：点开看完整样例）
+    'sp-tpl-preview', 'sp-sample-view', 'sp-sample-head', 'sp-sample-title',
+    'sp-sample-pager', 'sp-sample-back', 'sp-sample-prev', 'sp-sample-next',
+    'sp-sample-stage', 'sp-sample-img',
   ]
   const unstyled = required.filter(name => !defined(name))
   check('新增视图类名均有样式定义', unstyled.length === 0, unstyled.join(', '))

@@ -163,6 +163,31 @@ export interface ListTasksFilter {
     workspaceId?: string;
 }
 export declare function listTasks(filter?: ListTasksFilter): TaskIndexEntry[];
+export interface TemplateUsage {
+    templateId: string;
+    templateName?: string;
+    source?: string;
+    count: number;
+}
+export interface TaskHistoryInsights {
+    total: number;
+    byStatus: Record<string, number>;
+    byFormat: {
+        pptx: number;
+        html: number;
+    };
+    byTemplate: TemplateUsage[];
+    /** brief.style 取值去重（最新在前，≤5）。 */
+    styleValues: string[];
+    /** styleNotes 去重（最新在前，≤5）。 */
+    styleNotes: string[];
+    /** 大纲返工率：outlineVersion > 1 的任务 / 提交过大纲的任务（0 = 无大纲任务）。 */
+    outlineReworkRate: number;
+    lastCompletedAt?: string;
+    /** 最近 ≤5 个主题（Brief 确认时判断「是否同题材翻新」）。 */
+    recentTopics: string[];
+}
+export declare function summarizeHistory(limit?: number): TaskHistoryInsights;
 /** 素材名安全化：只取 basename，剔除路径分隔、控制字符与首部点。 */
 export declare function safeMaterialName(raw: string): string;
 export interface MaterialUploadResult {

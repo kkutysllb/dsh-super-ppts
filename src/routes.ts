@@ -7,7 +7,9 @@
  * 信任围栏：行为同位镜像 dsh-client-connection /api 网关围栏（loopback Host
  * 或 trustedHosts 放行；跨站浏览器标记拒之门外）——这是 DNS-rebind / 跨站
  * 防御，不是认证。trustedHosts 经 ctx.get('webRuntime') 软探测：未声明服务
- * 不影响加载，非 web 部署自然退化为纯 loopback。
+ * 不影响加载，非 web 部署自然退化为纯 loopback。CSRF 纵深（M3）：写路由
+ * 额外过 Origin 同源粗校验；JSON 操作面再要求 application/json content-type
+ * （跨站表单伪造不了该类型，带该类型的跨站 fetch 必触发预检且必败）。
  *
  * 响应信封：{ok:true,value} / {ok:false,error:{code,message}}（与生态内
  * 插件路由约定一致，client 侧统一解包）。
@@ -17,6 +19,8 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { packageRoot } from './paths.js'
 import { BUILTIN_TEMPLATES } from './builtin-templates.js'
 import {
   TemplateStoreError,
@@ -103,6 +107,47 @@ export function fenceRequest(req: IncomingMessage, trustedHosts: readonly string
   }
   if (isLoopbackHostname(authority.hostname)) return true
   return trustedHosts.some(entry => entry === host || entry === authority.hostname)
+}
+
+/**
+ * 同源粗校验（CSRF 纵深防御，与 fenceRequest 叠加，security-audit-host M3）：
+ * 浏览器跨站请求必带 Origin；其 host 与请求 Host / loopback / trustedHosts
+ * 都不一致即拒绝。无 Origin（curl 等非浏览器客户端）放行——Host 围栏仍然
+ * 生效；不可解析或非 http(s) 的 Origin（'null' / 自定义 scheme）不武断拒绝，
+ * 交给围栏与 content-type 契约兜底（跨站攻击者的 Origin 必是 http(s)）。
+ */
+function originAllowed(req: IncomingMessage, trustedHosts: readonly string[]): boolean {
+  const origin = req.headers.origin
+  if (typeof origin !== 'string' || origin === '') return true
+  let authority: URL
+  try {
+    authority = new URL(origin)
+  } catch {
+    return true
+  }
+  if (authority.protocol !== 'http:' && authority.protocol !== 'https:') return true
+  const host = req.headers.host
+  if (typeof host === 'string' && host !== '' && authority.host === host) return true
+  if (isLoopbackHostname(authority.hostname)) return true
+  return trustedHosts.some(entry => entry === authority.host || entry === authority.hostname)
+}
+
+/**
+ * JSON 操作面 content-type 契约（CSRF 主防御，security-audit-host M3）：
+ * 跨站 <form> 只能提交 urlencoded / multipart / text/plain——要求
+ * application/json 后表单 CSRF 天然不可达；fetch/XHR 带 JSON content-type
+ * 又必然触发 CORS 预检，而本服务从不回 CORS 头，预检必败。
+ */
+function isJsonContentType(req: IncomingMessage): boolean {
+  const header = req.headers['content-type']
+  if (typeof header !== 'string' || header === '') return false
+  const mediaType = (header.split(';')[0] ?? '').trim().toLowerCase()
+  return mediaType === 'application/json'
+}
+
+/** 跨站请求的统一 403 响应（fence 与 origin 两道围栏共用文案口径）。 */
+function writeForbidden(res: ServerResponse): void {
+  writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
 }
 
 /** 读并解析 JSON 请求体（有界；坏 JSON → bad-request）。 */
@@ -311,11 +356,19 @@ export function registerPptsRoutes(ctx: PptsRoutesContext, options: PptsRoutesOp
     path: '/super-ppts/api',
     handler: async (req, res) => {
       if (!fenceRequest(req, trustedHosts)) {
-        writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+        writeForbidden(res)
         return
       }
       if (req.method !== 'POST') {
         writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } })
+        return
+      }
+      if (!originAllowed(req, trustedHosts)) {
+        writeForbidden(res)
+        return
+      }
+      if (!isJsonContentType(req)) {
+        writeJson(res, 415, { ok: false, error: { code: 'method-error', message: 'content-type must be application/json' } })
         return
       }
       const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
@@ -339,11 +392,18 @@ export function registerPptsRoutes(ctx: PptsRoutesContext, options: PptsRoutesOp
     path: '/super-ppts/upload',
     handler: async (req, res) => {
       if (!fenceRequest(req, trustedHosts)) {
-        writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+        writeForbidden(res)
         return
       }
       if (req.method !== 'POST') {
         writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } })
+        return
+      }
+      // 原始流通道没有 content-type 契约可用（客户端发 octet-stream），跨站
+      // 表单在理论上可借 text/plain 伪造「恰好以 PK 魔数开头」的请求体——
+      // Origin 同源校验把这条路也封掉（跨站攻击者的 Origin 必异源）。
+      if (!originAllowed(req, trustedHosts)) {
+        writeForbidden(res)
         return
       }
       try {
@@ -366,7 +426,7 @@ export function registerPptsRoutes(ctx: PptsRoutesContext, options: PptsRoutesOp
     path: '/super-ppts/templates/thumb',
     handler: (req, res) => {
       if (!fenceRequest(req, trustedHosts)) {
-        writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+        writeForbidden(res)
         return
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -394,17 +454,68 @@ export function registerPptsRoutes(ctx: PptsRoutesContext, options: PptsRoutesOp
     },
   }), 'dsh-super-ppts: template thumbnail route'))
 
-  // 素材上传：任务目录内的原始流式落盘（与 /upload 同款信任围栏与限额）。
+  // 内置模板真缩略图：GET /super-ppts/templates/builtin-thumb/<id>——样例 deck
+  // 首页截图（assets/builtin-thumbs/<id>.jpg，由 scripts/build-builtin-decks.py
+  // 生成并随包分发）。id 白名单（builtin-* 形态 [a-z0-9-]）防路径穿越；真图
+  // 缺失时返回 404，client onError 回落 thumbSvg data URI（设计示意）。
+  disposers.push(ctx.effect(() => ctx.webServer.register({
+    kind: 'prefix',
+    path: '/super-ppts/templates/builtin-thumb',
+    handler: (req, res) => {
+      if (!fenceRequest(req, trustedHosts)) {
+        writeForbidden(res)
+        return
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } })
+        return
+      }
+      const url = new URL(req.url ?? '/', 'http://dsh.internal')
+      const id = decodeURIComponent(url.pathname.slice('/super-ppts/templates/builtin-thumb/'.length))
+      if (!/^[a-z0-9-]+$/.test(id)) {
+        writeJson(res, 404, { ok: false, error: { code: 'not-found', message: 'thumbnail not found' } })
+        return
+      }
+      // 页码：?page=N（样例 deck 多页浏览；缺省 1 = 卡片封面层）。N 越界即 404，
+      // 文件形态 <id>.jpg（第 1 页）/<id>-N.jpg（N≥2，由 build-builtin-decks.py 渲染）。
+      const pageRaw = url.searchParams.get('page') ?? '1'
+      const page = Number(pageRaw)
+      if (!Number.isInteger(page) || page < 1 || page > 99) {
+        writeJson(res, 404, { ok: false, error: { code: 'not-found', message: 'thumbnail not found' } })
+        return
+      }
+      const file = join(packageRoot, 'skills', 'ppts-pptx', 'assets', 'builtin-thumbs', page === 1 ? `${id}.jpg` : `${id}-${page}.jpg`)
+      try {
+        if (!existsSync(file)) throw new Error('missing')
+        const body = readFileSync(file)
+        res.writeHead(200, {
+          'content-type': 'image/jpeg',
+          'content-length': String(body.length),
+          'cache-control': 'private, max-age=86400',
+        })
+        res.end(req.method === 'HEAD' ? undefined : body)
+      } catch {
+        writeJson(res, 404, { ok: false, error: { code: 'not-found', message: 'thumbnail not found' } })
+      }
+    },
+  }), 'dsh-super-ppts: builtin template thumbnail route'))
+
+  // 素材上传：任务目录内的原始流式落盘（与 /upload 同款信任围栏、Origin
+  // 同源校验与限额）。
   disposers.push(ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/super-ppts/tasks/upload',
     handler: async (req, res) => {
       if (!fenceRequest(req, trustedHosts)) {
-        writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+        writeForbidden(res)
         return
       }
       if (req.method !== 'POST') {
         writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } })
+        return
+      }
+      if (!originAllowed(req, trustedHosts)) {
+        writeForbidden(res)
         return
       }
       try {

@@ -7,7 +7,9 @@
  * 信任围栏：行为同位镜像 dsh-client-connection /api 网关围栏（loopback Host
  * 或 trustedHosts 放行；跨站浏览器标记拒之门外）——这是 DNS-rebind / 跨站
  * 防御，不是认证。trustedHosts 经 ctx.get('webRuntime') 软探测：未声明服务
- * 不影响加载，非 web 部署自然退化为纯 loopback。
+ * 不影响加载，非 web 部署自然退化为纯 loopback。CSRF 纵深（M3）：写路由
+ * 额外过 Origin 同源粗校验；JSON 操作面再要求 application/json content-type
+ * （跨站表单伪造不了该类型，带该类型的跨站 fetch 必触发预检且必败）。
  *
  * 响应信封：{ok:true,value} / {ok:false,error:{code,message}}（与生态内
  * 插件路由约定一致，client 侧统一解包）。

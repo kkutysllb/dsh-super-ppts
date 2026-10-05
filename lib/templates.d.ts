@@ -46,7 +46,7 @@ export interface PptsPrefs {
     defaultFormat: 'ask' | 'pptx' | 'html';
     /** 渲染验收策略：deliverable-only=仅交付级必验 / always=每轮都验 / off。 */
     renderReview: 'deliverable-only' | 'always' | 'off';
-    /** 输出目录；空 = 会话工作目录。支持 ~ 前缀。 */
+    /** 输出目录；空 = 会话工作目录。落盘前已 ~ 展开并 resolve 为绝对路径（M2 规范化）。 */
     outputDir: string;
     /** 风格偏好备注（自由文本，agent 的全局审美基线）。 */
     styleNotes: string;
@@ -62,9 +62,9 @@ export declare const PREFS_DEFAULTS: PptsPrefs;
 export declare function looksLikePptx(buffer: Buffer): boolean;
 /** 生成模板 id：时间戳 base36 + 随机后缀（重命名/删除都不影响其他记录）。 */
 export declare function newTemplateId(): string;
-/** 名称校验：trim 后 1..NAME_MAX；返回 trim 结果。 */
+/** 名称校验：控制字符剔除 + trim 后 1..NAME_MAX；返回消毒结果。 */
 export declare function validateName(raw: string): string;
-/** 描述校验：trim 后 0..DESCRIPTION_MAX；返回 trim 结果。 */
+/** 描述校验：控制字符剔除 + trim 后 0..DESCRIPTION_MAX；返回消毒结果。 */
 export declare function validateDescription(raw: unknown): string;
 /**
  * 读清单。缺文件回落默认（首次运行的正常形态）；存在但坏 JSON / 形态不对时
@@ -90,7 +90,12 @@ export declare function generateTemplateThumb(pptxPath: string, id: string): Pro
 export declare function addTemplate(name: string, description: string, tmpFile: string): Promise<TemplateRecord>;
 /** 重命名 / 改描述（只改清单，不动文件）。 */
 export declare function renameTemplate(id: string, name: string, description?: string): TemplateRecord;
-/** 删除模板：清单移除 + 默认引用清理 + 删文件与缩略图（文件缺失不视为失败）。 */
+/**
+ * 删除模板：清单移除 + 默认引用清理 + 删文件与缩略图。
+ * rmSync 目标一律由 id 白名单内拼出的存储根内规范路径重算——清单里的 file
+ * 字段不可信（可能被改写指向任意外部文件），绝不直接作为删除目标
+ * （M1 纵深：清单投毒不能升级为任意文件删除）。文件缺失不视为失败。
+ */
 export declare function deleteTemplate(id: string): void;
 /** 设默认模板；null = 取消默认。 */
 export declare function setDefaultTemplate(id: string | null): void;

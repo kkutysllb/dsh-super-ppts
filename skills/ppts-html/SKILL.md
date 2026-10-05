@@ -62,6 +62,9 @@ HTML 是在线 PPT 的一种交付形态：产物是**单文件自包含 HTML**�
 - 浏览器打开自查 + 无头截图质检（复用
   `forms/video-shots/scripts/shot.js`：`node shot.js 页面.html <毫秒> _t.png`）；
 - 逐项过各形态交付标准清单；**无重叠遮挡、无中间态穿帮、结尾有定格**；
+- 用户要「PDF / 图片版」（或交付级任务建议附带）：`node
+  scripts/export_html.js 页面.html --pdf deck.pdf --png deck.png`（静态快照，
+  16:9 单页零边距；动效页要指定时刻的帧仍用 shot.js）；
 - 交付：文件路径 + 内容摘要（每页一句话）+ 询问调整意向。
 
 ## 全线硬性红线

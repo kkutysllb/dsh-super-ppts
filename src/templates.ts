@@ -31,7 +31,7 @@ import {
 } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 
 /**
@@ -98,7 +98,7 @@ export interface PptsPrefs {
   defaultFormat: 'ask' | 'pptx' | 'html'
   /** 渲染验收策略：deliverable-only=仅交付级必验 / always=每轮都验 / off。 */
   renderReview: 'deliverable-only' | 'always' | 'off'
-  /** 输出目录；空 = 会话工作目录。支持 ~ 前缀。 */
+  /** 输出目录；空 = 会话工作目录。落盘前已 ~ 展开并 resolve 为绝对路径（M2 规范化）。 */
   outputDir: string
   /** 风格偏好备注（自由文本，agent 的全局审美基线）。 */
   styleNotes: string
@@ -120,6 +120,37 @@ export const PREFS_DEFAULTS: PptsPrefs = {
 
 const PPTX_MAGIC = [0x50, 0x4b, 0x03, 0x04] as const
 
+/* ── 防御纵深（security-audit-host M1/M2/M4）：清单不可信、文本先消毒、路径先规范 ──
+ * registry.json 是低频配置文件，但「能写到它的主体」不等价于「插件信任的主体」
+ * （同机兄弟插件、跨过围栏的请求都可能改写它）。因此：
+ * - 清单里的 id / file 拼路径前过白名单与包含检查，rmSync 绝不直接消费存量 file；
+ * - 单行文本（名称/描述）剔除全部控制字符；多行文本（styleNotes）保留 \t\n、
+ *   剔除 \r 与其余控制字符（防日志/渲染拆行注入与上下文夹带）；
+ * - outputDir 落盘前 ~ 展开 + resolve，消费侧（agent）拿到的永远是消歧后的绝对路径。 */
+
+/** 模板 id 白名单（newTemplateId 生成形态；thumbFileFor/重锚/删文件拼路径前必经）。 */
+const TEMPLATE_ID_RE = /^[a-z0-9]+$/
+
+/** 单行文本消毒口径：C0 控制字符 + DEL 全部剔除。 */
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/g
+
+/** 多行文本消毒口径：保留 \t 与 \n，剔除 \r（防拆行注入）与其余控制字符。 */
+const MULTILINE_CONTROL_CHARS_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\r]/g
+
+/** 路径包含检查（词汇级，不做 realpath——模板目录本身可能是合法的符号链接部署）。 */
+function isInsideTemplateDir(file: string): boolean {
+  const root = resolve(TEMPLATE_DIR)
+  const resolved = resolve(file)
+  return resolved === root || resolved.startsWith(root + sep)
+}
+
+/** 展开 ~ 与 ~/（仅前缀形态；~user 不支持，按字面处理）。 */
+function expandHomeDir(pathText: string): string {
+  if (pathText === '~') return homedir()
+  if (pathText.startsWith('~/') || pathText.startsWith('~\\')) return join(homedir(), pathText.slice(2))
+  return pathText
+}
+
 /** .pptx 即 zip 容器：校验 PK\x03\x04 魔数（上传首块必查，防非 PPTX 落盘）。 */
 export function looksLikePptx(buffer: Buffer): boolean {
   return buffer.length >= 4 && PPTX_MAGIC.every((byte, index) => buffer[index] === byte)
@@ -130,17 +161,17 @@ export function newTemplateId(): string {
   return `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 }
 
-/** 名称校验：trim 后 1..NAME_MAX；返回 trim 结果。 */
+/** 名称校验：控制字符剔除 + trim 后 1..NAME_MAX；返回消毒结果。 */
 export function validateName(raw: string): string {
-  const name = String(raw ?? '').trim()
+  const name = String(raw ?? '').replace(CONTROL_CHARS_RE, '').trim()
   if (name.length === 0) throw new TemplateStoreError('bad-request', '模板名称不能为空')
   if (name.length > NAME_MAX) throw new TemplateStoreError('bad-request', `模板名称过长（≤ ${NAME_MAX} 字符）`)
   return name
 }
 
-/** 描述校验：trim 后 0..DESCRIPTION_MAX；返回 trim 结果。 */
+/** 描述校验：控制字符剔除 + trim 后 0..DESCRIPTION_MAX；返回消毒结果。 */
 export function validateDescription(raw: unknown): string {
-  const description = String(raw ?? '').trim()
+  const description = String(raw ?? '').replace(CONTROL_CHARS_RE, '').trim()
   if (description.length > DESCRIPTION_MAX) {
     throw new TemplateStoreError('bad-request', `描述过长（≤ ${DESCRIPTION_MAX} 字符）`)
   }
@@ -199,16 +230,18 @@ function importLegacyStore(): void {
 
 /**
  * 清单 file 路径自愈：历史部署可能记着旧 home 的绝对路径（如 ~/.dsh/...），
- * 二进制实际在当前存储根。按模板 id 重锚到 TEMPLATE_DIR/<id>.pptx；
- * 记录形态不合法（缺 id）时返回 null 由调用方丢弃。
+ * 二进制实际在当前存储根。id 与 file 都不可信（清单可能被外部改写）：
+ * - id 不在白名单即丢弃记录（与「缺 id」同等处理——id 是一切拼路径的前提）；
+ * - file 只在模板目录之内被信任；域外/缺失/force 一律重锚到规范位
+ *   TEMPLATE_DIR/<id>.pptx（即使规范位当前不存在也改写），清单里不再长期
+ *   保留指向存储根之外的路径（M1 纵深：投毒清单的自愈面）。
  */
 function reanchorRecord(record: TemplateRecord, force = false): TemplateRecord | null {
   if (record === null || typeof record !== 'object') return null
-  if (typeof record.id !== 'string' || record.id === '') return null
-  if (!force && typeof record.file === 'string' && record.file !== '' && existsSync(record.file)) return record
-  const candidate = join(TEMPLATE_DIR, `${record.id}.pptx`)
-  if (existsSync(candidate)) return { ...record, file: candidate }
-  return record
+  if (typeof record.id !== 'string' || !TEMPLATE_ID_RE.test(record.id)) return null
+  if (!force && typeof record.file === 'string' && record.file !== ''
+    && isInsideTemplateDir(record.file) && existsSync(record.file)) return record
+  return { ...record, file: join(TEMPLATE_DIR, `${record.id}.pptx`) }
 }
 
 /**
@@ -444,16 +477,23 @@ export function renameTemplate(id: string, name: string, description?: string): 
   return record
 }
 
-/** 删除模板：清单移除 + 默认引用清理 + 删文件与缩略图（文件缺失不视为失败）。 */
+/**
+ * 删除模板：清单移除 + 默认引用清理 + 删文件与缩略图。
+ * rmSync 目标一律由 id 白名单内拼出的存储根内规范路径重算——清单里的 file
+ * 字段不可信（可能被改写指向任意外部文件），绝不直接作为删除目标
+ * （M1 纵深：清单投毒不能升级为任意文件删除）。文件缺失不视为失败。
+ */
 export function deleteTemplate(id: string): void {
   const registry = loadRegistry()
   const record = requireTemplate(registry, id)
   registry.templates = registry.templates.filter(item => item.id !== id)
   if (registry.defaultTemplate === id) registry.defaultTemplate = null
   saveRegistry(registry)
-  try { rmSync(record.file, { force: true }) } catch { /* 清单已一致，文件清理尽力而为 */ }
-  for (const ext of ['jpg', 'png'] as const) {
-    try { rmSync(join(TEMPLATE_DIR, `${id}.thumb.${ext}`), { force: true }) } catch { /* 尽力而为 */ }
+  if (TEMPLATE_ID_RE.test(record.id)) {
+    try { rmSync(join(TEMPLATE_DIR, `${record.id}.pptx`), { force: true }) } catch { /* 清单已一致，文件清理尽力而为 */ }
+    for (const ext of ['jpg', 'png'] as const) {
+      try { rmSync(join(TEMPLATE_DIR, `${record.id}.thumb.${ext}`), { force: true }) } catch { /* 尽力而为 */ }
+    }
   }
 }
 
@@ -494,12 +534,14 @@ export function updatePrefs(patch: unknown): PptsPrefs {
     next.renderReview = input.renderReview as PptsPrefs['renderReview']
   }
   if (input.outputDir !== undefined) {
-    const value = String(input.outputDir).trim()
+    const value = String(input.outputDir).replace(CONTROL_CHARS_RE, '').trim()
     if (value.length > 500) throw new TemplateStoreError('bad-request', 'outputDir 过长（≤ 500 字符）')
-    next.outputDir = value
+    // 落盘前规范化（~ 展开 + resolve，M2）：偏好里不允许留存相对/带 .. 的歧义
+    // 形态，消费侧（ppts_templates → agent）拿到的始终是消歧后的绝对路径。
+    next.outputDir = value === '' ? '' : resolve(expandHomeDir(value))
   }
   if (input.styleNotes !== undefined) {
-    const value = String(input.styleNotes)
+    const value = String(input.styleNotes).replace(MULTILINE_CONTROL_CHARS_RE, '')
     if (value.length > 2000) throw new TemplateStoreError('bad-request', 'styleNotes 过长（≤ 2000 字符）')
     next.styleNotes = value
   }
