@@ -1790,16 +1790,23 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
     } catch (error) {
       exportErr = String(error.stderr || error.message || error)
     }
-    check('export_html：PDF + PNG 双产物落盘',
-      exportErr === '' && existsSync(pdfOut) && existsSync(pngOut)
-      && statSync(pdfOut).size > 500 && statSync(pngOut).size > 2000, exportErr.slice(0, 200))
-    // Chrome 把 @page 的 px 按 0.75 换算成 pt（1920x1080px → 1440x810pt），按 16:9 比例断言
-    const pdfText = readFileSync(pdfOut).toString('latin1')
-    const box = pdfText.match(/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/)
-    const ratioOk = box !== null
-      && Math.abs((Number(box[3]) - Number(box[1])) / (Number(box[4]) - Number(box[2])) - 16 / 9) < 0.01
-    check('export_html：PDF 单页 16:9（%PDF 魔数 + MediaBox 比例）',
-      pdfText.startsWith('%PDF') && ratioOk, box ? box[0] : 'MediaBox 未找到')
+    const exported = exportErr === '' && existsSync(pdfOut) && existsSync(pngOut)
+      && statSync(pdfOut).size > 500 && statSync(pngOut).size > 2000
+    check('export_html：PDF + PNG 双产物落盘', exported, exportErr.slice(0, 200))
+    if (exported) {
+      // Chrome 把 @page 的 px 按 0.75 换算成 pt（1920x1080px → 1440x810pt），按 16:9 比例断言
+      const pdfText = readFileSync(pdfOut).toString('latin1')
+      const box = pdfText.match(/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/)
+      const ratioOk = box !== null
+        && Math.abs((Number(box[3]) - Number(box[1])) / (Number(box[4]) - Number(box[2])) - 16 / 9) < 0.01
+      check('export_html：PDF 单页 16:9（%PDF 魔数 + MediaBox 比例）',
+        pdfText.startsWith('%PDF') && ratioOk, box ? box[0] : 'MediaBox 未找到')
+    } else {
+      // 本项依赖上一项的产物，不产文件就直接读会抛 ENOENT 并**中断整个冒烟**，
+      // 把后面的断言全部吞掉（实机教训：Chrome headless 偶发失败时，
+      // 下游「宽度」断言被掩盖，误判为「只有 1 项环境性失败」）。
+      console.log('SKIP  export_html：PDF 单页 16:9（上一项未产出 PDF，跳过而非中断）')
+    }
   }
 
   // template_thumbnails.py：本机有 soffice+pdftoppm 才真跑（demos 自带 5 页 deck）
@@ -3402,9 +3409,10 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       && clientSource.includes('.sp-panels::-webkit-scrollbar{display:none;}')
       && !clientSource.includes('--dsh-scrollbar-width')
       && !clientSource.includes('scrollbar-gutter:stable'))
-    check('宽度吃满宿主列（实机反馈：不限宽居中，width:100% + % 内边距随侧边栏开合自适应）',
+    check('宽度限宽居中（实机反馈：对齐 dsh-animations 的 960px 内容列 + % 内边距随侧边栏开合自适应）',
       /\.sp-panels\{[^}]*width:100%/.test(clientSource)
-      && !/\.sp-panels\{[^}]*max-width/.test(clientSource)
+      && /\.sp-panels\{[^}]*max-width:960px/.test(clientSource)
+      && /\.sp-panels\{[^}]*margin:0 auto/.test(clientSource)
       && /\.sp-panels\{[^}]*padding:28px clamp\(24px,4%,48px\)/.test(clientSource))
     check('侧边栏开合自动避让：ResizeObserver 观察父容器尺寸（不依赖 window resize）',
       clientSource.includes('new ResizeObserver(fitToParent)') && clientSource.includes('observer.observe(parent)'))
