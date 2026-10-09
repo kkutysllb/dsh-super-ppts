@@ -6,8 +6,10 @@
  *
  * 信任围栏：行为同位镜像 dsh-client-connection /api 网关围栏（loopback Host
  * 或 trustedHosts 放行；跨站浏览器标记拒之门外）——这是 DNS-rebind / 跨站
- * 防御，不是认证。trustedHosts 经 ctx.get('webRuntime') 软探测：未声明服务
- * 不影响加载，非 web 部署自然退化为纯 loopback。CSRF 纵深（M3）：写路由
+ * 防御，不是认证。trustedHosts 经软探测解析（dsh 0.2.1-alpha.2 起优先
+ * ctx.get('webStartup')，回退已被移除的 'webRuntime'；两者皆缺则退化为纯
+ * loopback，非 web 部署不受影响），并额外放行监听器自身绑定地址，对齐 dsh
+ * 自身围栏（api-request-trust.ts 的 isBindAddressAuthority）。CSRF 纵深（M3）：写路由
  * 额外过 Origin 同源粗校验；JSON 操作面再要求 application/json content-type
  * （跨站表单伪造不了该类型，带该类型的跨站 fetch 必触发预检且必败）。
  *
@@ -20,6 +22,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 /** webServer 服务面（结构镜像 dsh-host-webserver 的 WebRoute）。 */
 export interface PptsWebServerFace {
+    /** 监听绑定地址（dsh-host-webserver `get host()`）；非 web 部署可缺省。 */
+    readonly host?: string;
     register(route: {
         kind: 'exact' | 'prefix';
         path: string;
@@ -40,6 +44,21 @@ export declare class PptsRouteError extends Error {
 }
 /** 信任围栏：Host header loopback / trustedHosts 精确匹配才放行。 */
 export declare function fenceRequest(req: IncomingMessage, trustedHosts: readonly string[]): boolean;
+/**
+ * 解析本部署认可的 trustedHosts 来源。
+ *
+ * dsh 0.2.1-alpha.2 移除了 `webRuntime` 服务，改由 `webStartup` 承载
+ * `--trusted-host` 权威（见 dsh 升级指南
+ * docs/upgrade-guide/v0.2.1-alpha.1/web-listener-trust-config/guide.md）。
+ * 两者都软探测：都没有时退化为纯 loopback——非 web 部署本就没有 LAN 面，
+ * 故不声明 `inject`（声明了反而会等待永不挂载的服务而卡住启动）。
+ *
+ * 另外放行监听器自身绑定地址：绑定一块具体网卡即为显式部署意图，对齐 dsh
+ * 自身围栏（dsh-client-connection/api-request-trust.ts 的
+ * isBindAddressAuthority）。alpha.2 起通配地址在加载期即被拒绝，故此处拿到的
+ * 绑定地址必为具体本机地址，不会因此把围栏放宽到全网段。
+ */
+export declare function resolveTrustedHosts(ctx: PptsRoutesContext): readonly string[];
 /** JSON 操作面：method → handler（templates.* / prefs.* / tasks.*）。 */
 export declare function buildPptsApiHandlers(): Record<string, (payload: unknown) => unknown>;
 export interface PptsRoutesOptions {

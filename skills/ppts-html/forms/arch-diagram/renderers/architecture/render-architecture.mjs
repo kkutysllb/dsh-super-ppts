@@ -10,7 +10,6 @@ import {
   defaultFromSide,
   defaultToSide,
   chosenSide,
-  polylinePath,
   roundedPath,
   labelPoint,
   componentFill,

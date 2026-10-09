@@ -5,15 +5,22 @@
 
 ## 三层验收（机检层 → 视觉门 → 缺陷门）
 
-**机检层**（渲染前，validate_pptx.py——不依赖 LibreOffice，降级路径也可用）：
+**机检层**（渲染前，两个脚本——都不依赖 LibreOffice，降级路径也可用）：
 
 ```bash
 python3 <包根>/skills/ppts-pptx/scripts/validate_pptx.py deck.pptx
+python3 <包根>/skills/ppts-pptx/scripts/check_typography.py deck.pptx \
+  --min-size-pt 10 --font 微软雅黑 --max-colors 4      # 或 --spec template-spec.json
 ```
 
-- 容器完整性（zip CRC）、必要部件、rels 引用闭包（悬空引用 = PowerPoint
-  报「需要修复」的主因）、占位符内容 QA（lorem/TODO/待补充…）；
-- **FAIL 必须先修才能进视觉门**；WARN（空页、缺元数据）记录并判断。
+- **结构**（validate_pptx.py）：容器完整性（zip CRC）、必要部件、rels 引用闭包
+  （悬空引用 = PowerPoint 报「需要修复」的主因）、占位符内容 QA（lorem/TODO/待补充…）；
+- **排版**（check_typography.py）：最小字号 / 字体白名单 / 配色数——把模板与用户
+  声明的排版约束变成可判定的门。模板任务的规则来源有两处：`ppts_templates` 返回的
+  `constraints`（模板描述 + 全局风格备注），以及 `template_spec.py` 从**模板页文字**
+  里读出的 `levelRules`。缺这一步时「最小10号字 / 字体微软雅黑 / 颜色最多4色」
+  无人校验——实机曾出现 8pt 小字与宋体/Arial 混排却全绿交付；
+- **FAIL 必须先修才能进视觉门**；WARN（空页、缺元数据、规范外字号）记录并判断。
 
 **视觉门**（对照锁定方向，在渲染 PNG 上）：
 

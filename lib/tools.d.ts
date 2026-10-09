@@ -61,6 +61,8 @@ interface TemplateToolEntry {
     sizeMb: number;
     uploadedAt: string;
     isDefault: boolean;
+    /** 逐条硬性约束（模板描述 + 全局风格备注分句）；空数组 = 未声明任何约束。 */
+    constraints: string[];
 }
 /** 模板库查询：list 返回全部模板 + 生成偏好 + 内置模板；detail 按 id/名称取单条；history 返回生成画像。 */
 export declare function runTemplates(params?: PptsTemplatesParams): {

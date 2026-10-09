@@ -32,6 +32,14 @@ metadata:
   ——容器完整性 / rels 引用闭包 / 内容 QA 占位符扫描（不依赖 LibreOffice，
   渲染链缺失的降级路径下也可用）。视觉门证明「看起来对」，机检层证明
   「文件是健康的」——LibreOffice 能渲染 ≠ PowerPoint 能打开。
+- 模板规范：`python3 <插件包根>/skills/ppts-pptx/scripts/template_spec.py <模板.pptx>`
+  ——读出模板**文字里写明**的分层字号/字体/行距/颜色（px 按 1px=0.75pt 折算），
+  以及模板实际用到的字体/字号分布。用户常把规范直接写在模板某一页上，只跑
+  缩略图读不到文字（见 §5「读规范——不要只出图」）。
+- 排版机检：`python3 <插件包根>/skills/ppts-pptx/scripts/check_typography.py deck.pptx
+  --min-size-pt 10 --font 微软雅黑 --max-colors 4`（或 `--spec <模板规范.json>`
+  由规范推导字号下限）——把模板约束变成可判定的门：最小字号 / 字体白名单 /
+  配色数，与 validate_pptx.py 同款退出码（0=PASS，1=有 FAIL）。
 - 动画嵌入（混合交付，显式声明才启用，见下文专章）：
   捕获 `scripts/html_capture.py`，嵌入 `scripts/embed_animation.py`；
   页间切换写入 `scripts/add_transitions.py`（Phase 0，同样显式声明才启用）。
@@ -99,16 +107,28 @@ Brief 要求演讲备注时，页面规划阶段就为每页起草一句话备�
   保留框架页与品牌 token，同页基础上加新页，新旧页同过渲染验收。
 - **用户模板库（优先于 VI Build 的裸模板路径）**：用户说「按模板 X 制作 /
   用我的模板」，或 Brief 涉及公司模板时，先调 `ppts_templates`
-  （`action=detail`，`id`=名称或模板 id）拿模板绝对路径与偏好
-  （默认交付形态 / 渲染验收策略 / 输出目录 / 风格备注）；**拿到路径后先跑
-  `template_thumbnails.py` 逐页出图并查看全部版式**（首页缩略图只够认模板，
-  不够选版式），再以该 .pptx 为基底走 VI Build。库为空时提示用户到 Web
-  设置页「演示文稿」上传并命名模板。
+  （`action=detail`，`id`=名称或模板 id）拿模板绝对路径、`prefs`（默认交付形态 /
+  渲染验收策略 / 输出目录 / 风格备注）与 `constraints`（**逐条硬性验收项**）。
+  拿到路径后按序做三件事：
+  1. **读规范——不要只出图**：跑 `template_spec.py <模板.pptx>`。用户常把分层
+     字号/字体/行距/颜色规范**直接写在模板的某一页上**，只跑缩略图的话 Agent
+     看到的是图片、读不到文字规则，成品就会按自己的默认排版走。脚本产出
+     `levelRules`（模板要求的分层排版）与 `observed`（模板实际字体/字号分布）。
+     注意 `sizeAsWritten` 与 `sizePt`：作者多按 px 标注，脚本已按 **1px = 0.75pt**
+     折算，**实现时一律用 `sizePt`**（例：24px → 18pt，不是 24pt）。
+  2. **看版式**：跑 `template_thumbnails.py` 逐页出图并查看全部版式
+     （首页缩略图只够认模板，不够选版式）。
+  3. 以该 .pptx 为基底走 VI Build。
+  **`constraints` 与 `levelRules` 是验收项，不是背景介绍**：交付前逐条落实，
+  并用 `check_typography.py` 机检（见 §6）。库为空时提示用户到 Web 设置页
+  「演示文稿」上传并命名模板。
 
 ### 6. 构建与检视循环
 
 每次实质修订：跑脚本 → **结构机检**（validate_pptx.py：FAIL 必须先修，
-不进视觉门）→ 渲染 PDF/PNG（**只重渲有改动的页**，未动页沿用上一轮 PNG）
+不进视觉门）→ **排版机检**（模板任务必做：`check_typography.py <产物> --spec <模板规范.json>
+--max-colors N`，把模板约束变成可判定的门；查出 FAIL 先修再渲）→ 渲染 PDF/PNG
+（**只重渲有改动的页**，未动页沿用上一轮 PNG）
 → 对照验收表逐行检视 → 记录 `PASS / NEEDS_REVISION / BLOCKED` + 证据 +
 下一步修订 → 循环至全部 MUST 通过。
 

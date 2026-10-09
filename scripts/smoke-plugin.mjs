@@ -69,17 +69,6 @@ check('路由已注册（api + upload + tasks/upload + thumb + builtin-thumb）'
     && routes.has('/super-ppts/templates/thumb/*') && routes.has('/super-ppts/templates/builtin-thumb/*'))
 check('effect 已登记', effects.length === 5)
 
-function mockRes() {
-  return new Promise((resolve) => {
-    const chunks = []
-    const res = {
-      writeHead(status, headers) { res._status = status; res._headers = headers },
-      end(body) { chunks.push(body); resolve({ status: res._status, body: chunks.join('') }) },
-    }
-    return res
-  })
-}
-
 async function callApi(method, payload) {
   const handler = routes.get('/super-ppts/api/*')
   const req = {
@@ -135,6 +124,70 @@ async function callApi(method, payload) {
     await call({ 'content-type': 'application/json', origin: 'https://evil.example' }) === 403)
   check('JSON 操作面同源 Origin 放行（200）',
     await call({ 'content-type': 'application/json', origin: 'http://127.0.0.1:60864' }) === 200)
+}
+
+// 信任来源解析（dsh 0.2.1-alpha.2 契约迁移）：web profile 改用 `webStartup`
+// 承载 --trusted-host 权威，`webRuntime` 已被上游删除；此外监听器自身绑定
+// 地址放行（对齐 dsh 自身围栏 api-request-trust.ts 的 isBindAddressAuthority）。
+// 缺这组断言时迁移失败会静默退化为纯 loopback → LAN 部署下 /super-ppts/*
+// 全 403，而既有「evil.example 拒绝」断言仍然全绿（不构成覆盖）。
+{
+  const { resolveTrustedHosts } = await import('../lib/routes.js')
+  const makeCtx = (services, host) => ({
+    webServer: { register: () => () => {}, ...(host === undefined ? {} : { host }) },
+    effect: () => () => {},
+    get: (name) => services[name],
+  })
+  const resolved = (...args) => JSON.stringify(resolveTrustedHosts(makeCtx(...args)))
+
+  check('信任来源：webStartup.trustedHosts 被消费（alpha.2 契约）',
+    resolved({ webStartup: { trustedHosts: ['app.internal'] } }, '192.168.1.5')
+      === JSON.stringify(['app.internal', '192.168.1.5']))
+  check('信任来源：webRuntime 回退仍生效（alpha.1 及更早）',
+    resolved({ webRuntime: { trustedHosts: ['old.internal'] } }, undefined)
+      === JSON.stringify(['old.internal']))
+  check('信任来源：webStartup 优先于 webRuntime',
+    resolved({ webStartup: { trustedHosts: ['new.internal'] }, webRuntime: { trustedHosts: ['old.internal'] } }, undefined)
+      === JSON.stringify(['new.internal']))
+  check('信任来源：监听绑定地址自身放行（无需 --trusted-host）',
+    resolved({ webStartup: { trustedHosts: [] } }, '10.0.0.7') === JSON.stringify(['10.0.0.7']))
+  check('信任来源：两者皆缺 → 纯 loopback（非 web 部署不受影响）',
+    resolveTrustedHosts(makeCtx({}, undefined)).length === 0)
+  check('信任来源：非法条目被过滤（非字符串/空串不进围栏）',
+    resolved({ webStartup: { trustedHosts: ['', 42, null, 'ok.example'] } }, undefined)
+      === JSON.stringify(['ok.example']))
+
+  // 端到端：绑具体 LAN 地址的 alpha.2 部署，Host 为该地址时必须放行（迁移前恒 403）
+  const lanRoutes = new Map()
+  registerPptsRoutes({
+    webServer: {
+      host: '192.168.1.5',
+      register(route) {
+        lanRoutes.set(route.kind === 'exact' ? route.path : route.path + '/*', route.handler)
+        return () => {}
+      },
+    },
+    effect(fn) { return fn() },
+    get: (name) => (name === 'webStartup' ? { trustedHosts: [] } : undefined),
+  }, { uploadLimitBytes: 1024 })
+  const lanRes = { writeHead(s) { lanRes._status = s }, end() {} }
+  await lanRoutes.get('/super-ppts/api/*')({
+    method: 'POST',
+    url: '/super-ppts/api/templates.list',
+    headers: { host: '192.168.1.5:60864', 'content-type': 'application/json' },
+    async *[Symbol.asyncIterator]() {},
+  }, lanRes)
+  check('LAN 部署：Host = 绑定地址放行（alpha.2 迁移前恒 403）', lanRes._status === 200)
+
+  // 反向：既非 loopback 又不在信任面内的 Host 仍须拒绝（围栏未被放宽）
+  const evilRes = { writeHead(s) { evilRes._status = s }, end() {} }
+  await lanRoutes.get('/super-ppts/api/*')({
+    method: 'POST',
+    url: '/super-ppts/api/templates.list',
+    headers: { host: 'evil.example', 'content-type': 'application/json' },
+    async *[Symbol.asyncIterator]() {},
+  }, evilRes)
+  check('LAN 部署：面外 Host 仍拒绝（403，绑定地址不构成全网段放行）', evilRes._status === 403)
 }
 
 // 未知 method → 404
@@ -916,11 +969,6 @@ function textOf(node, out = []) {
 
 function treeText(tree) { return textOf(tree).join('') }
 
-/** 按标签名筛选元素（type 可能是字符串标签或函数组件）。 */
-function byTag(tree, tag) {
-  return collectElements(tree).filter(element => element.type === tag)
-}
-
 /** 找到第一个满足断言的元素。 */
 function findElement(tree, predicate) {
   return collectElements(tree).find(predicate)
@@ -1187,7 +1235,7 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
   const nonOptional = dshPeers.filter((k) => meta[k]?.optional !== true)
   check('契约层：dsh peer 全部 optional（防 pnpm 自动安装整棵引擎树）', dshPeers.length > 0 && nonOptional.length === 0,
     nonOptional.join(','))
-  check('契约层：版本号 1.5.0（对标整改 P0–P2 + 内置模板 16 方向真缩略图/完整样例 + host 安全加固）', manifest.version === '1.5.0', String(manifest.version))
+  check('契约层：版本号 1.5.1（dsh 0.2.1-alpha.2 适配 + 模板规范链路 + 面板限宽/控件归一 + 死代码清理）', manifest.version === '1.5.1', String(manifest.version))
 }
 
 // 工具 schema 合规：优先用运行时 dsh-tools 的真校验器（assertSupportedJsonSchema
@@ -1606,6 +1654,93 @@ const enDict = () => (dictCalls.find((d) => d.ns === 'superPpts') || {}).dicts?.
       check('transitions：--in-place 幂等覆盖（push 替换默认）', inPlace.out.includes('PUSH_OK'), inPlace.out.slice(-200))
     } catch (error) {
       check('P0 结构校验/切换写入块', false, String(error.message || error).slice(0, 220))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/* ═══ 5c. 模板规范提取 + 排版合规机检（2026-10-09）═══
+   动机：用户把分层字号/字体/配色要求写在模板描述**或模板页文字里**，但此前
+   链路只跑缩略图出图、不读文字规则，成品字号与字体也无人校验 → 规则形同虚设
+   （实机：成品出现 8pt 小字与宋体/Arial 混排，没有任何检查报错）。
+   template_spec.py 把规则读成结构化 levelRules（px 按 0.75 折算 pt）；
+   check_typography.py 把规则变成 FAIL/WARN 门。两块都只用标准库。 */
+{
+  const specScript = join(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'template_spec.py')
+  const typoScript = join(packageRoot, 'skills', 'ppts-pptx', 'scripts', 'check_typography.py')
+  let pyOk = true
+  try {
+    execFileSync('python3', ['--version'], { stdio: 'ignore' })
+  } catch {
+    pyOk = false
+  }
+  if (!existsSync(specScript) || !existsSync(typoScript)) pyOk = false
+  if (!pyOk) {
+    console.log('SKIP  模板规范/排版机检测试（python3 / 脚本缺失）')
+  } else {
+    const dir = mkdtempSync(join(tmpdir(), 'sp-typo-smoke-'))
+    const run = (script, args) => {
+      try {
+        return { code: 0, out: execFileSync('python3', [script, ...args], { encoding: 'utf8', cwd: dir }) }
+      } catch (error) {
+        return { code: error.status ?? 1, out: String(error.stdout || '') + String(error.stderr || '') }
+      }
+    }
+    try {
+      // 夹具：规范页按真实 PowerPoint 的 run 拆分方式书写（「颜色」「深红」分属两个 run），
+      // 用来验证「run 间插空格」的解析修正；bad.pptx 含 8pt 小字 + 白名单外字体。
+      writeFileSync(join(dir, 'mktpl.py'), [
+        "import zipfile, os, sys",
+        "out = sys.argv[1]",
+        "os.makedirs(out, exist_ok=True)",
+        "def slide(runs):",
+        "    body = ''.join('<a:r><a:t>%s</a:t></a:r>' % t for t in runs)",
+        "    return '<p:sld xmlns:p=\"p\" xmlns:a=\"a\"><p:cSld><p:spTree><a:p>' + body + '</a:p></p:spTree></p:cSld></p:sld>'",
+        "with zipfile.ZipFile(os.path.join(out, 'tpl.pptx'), 'w') as z:",
+        "    z.writestr('ppt/slides/slide1.xml', slide(['顶部标题样式', '---', '字体雅黑', '，', '大小', '24px，', '颜色', '深红']))",
+        "    z.writestr('ppt/slides/slide2.xml', slide(['综述内容样式', '---', '字体雅黑', '，', '大小', '16px，', '行间距', '1.5，', '颜色', '黑色']))",
+        "with zipfile.ZipFile(os.path.join(out, 'bad.pptx'), 'w') as z:",
+        "    z.writestr('ppt/slides/slide1.xml', '<p:sld xmlns:p=\"p\" xmlns:a=\"a\"><a:rPr sz=\"800\"><a:latin typeface=\"宋体\"/></a:rPr><a:srgbClr val=\"FF0000\"/><a:srgbClr val=\"00FF00\"/></p:sld>')",
+        "print('TPL_OK')",
+      ].join('\n'))
+      const fx = run(join(dir, 'mktpl.py'), [dir])
+      check('模板夹具构建（规范页 run 拆分 + 违规页）', fx.code === 0 && fx.out.includes('TPL_OK'), fx.out.slice(-200))
+
+      const specRun = run(specScript, [join(dir, 'tpl.pptx'), '--json'])
+      let specJson = null
+      try {
+        specJson = JSON.parse(specRun.out)
+      } catch {
+        specJson = null
+      }
+      check('template_spec：解析出分层排版规则',
+        !!specJson && Array.isArray(specJson.levelRules) && specJson.levelRules.length >= 2,
+        specRun.out.slice(-200))
+      check('template_spec：px → pt 折算（24px=18pt、16px=12pt、行距 1.5）',
+        !!specJson && specJson.levelRules.some(r => r.sizePt === 18 && r.sizeAsWritten === '24px')
+          && specJson.levelRules.some(r => r.sizePt === 12 && r.lineSpacing === 1.5),
+        JSON.stringify(specJson && specJson.levelRules))
+      check('template_spec：层级标签按「XX样式」归位（防止颜色值黏连成伪标签）',
+        !!specJson && specJson.levelRules.some(r => r.level === '顶部标题')
+          && specJson.levelRules.some(r => r.level === '综述内容'))
+
+      const selftest = run(typoScript, ['--selftest'])
+      check('check_typography：--selftest 内建自检 PASS',
+        selftest.code === 0 && selftest.out.includes('selftest: PASS'), selftest.out.slice(-200))
+
+      const bad = run(typoScript, [join(dir, 'bad.pptx'), '--min-size-pt', '10', '--font', '微软雅黑', '--max-colors', '1'])
+      check('check_typography：小字 + 白名单外字体 + 超配色 → FAIL(exit 1)',
+        bad.code === 1 && bad.out.includes('最小字号') && bad.out.includes('字体白名单') && bad.out.includes('配色数'),
+        bad.out.slice(-300))
+
+      // --spec 驱动：下限由 levelRules 推导（规范最小 12pt），bad.pptx 的 8pt 必挂
+      writeFileSync(join(dir, 'spec.json'), specRun.out)
+      const specDriven = run(typoScript, [join(dir, 'bad.pptx'), '--spec', join(dir, 'spec.json')])
+      check('check_typography：--spec 驱动（下限由模板规范推导）',
+        specDriven.code === 1 && specDriven.out.includes('最小字号'), specDriven.out.slice(-220))
+    } catch (error) {
+      check('5c 模板规范/排版机检块', false, String(error.message || error).slice(0, 220))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -5,6 +5,11 @@
 **Auditor**: dsh-harness subagent
 **Date**: 2026-10-01
 
+**修复状态（2026-10-09 补注）**: M1–M5 已在 v1.5.0 全量修复（见 `release/v1.5.0.md`）；
+L1、L3、I1、I2 属纵深防御 / 设计取舍项，L2、L4 经复核为「写法本就正确」，均无待办。
+本文件是 `src/routes.ts`、`src/templates.ts`、`scripts/smoke-plugin.mjs` 中
+「security-audit-host M1–M5」注释所引用的来源记录，故随仓库保留。
+
 ## Summary
 
 - **Total findings**: 11 (Critical 0, High 0, Medium 5, Low 4, Info 2)

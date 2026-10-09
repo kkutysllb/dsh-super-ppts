@@ -159,7 +159,7 @@ def main() -> None:
     produced: list[str] = []
     try:
         with sync_playwright() as playwright:
-            browser, channel = launch_browser(playwright)
+            browser, _channel = launch_browser(playwright)
             try:
                 page = browser.new_page(viewport={"width": out.width, "height": out.height})
                 page.goto(file_url(out.html), wait_until="load")
